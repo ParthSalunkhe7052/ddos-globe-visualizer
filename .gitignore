@@ -1,0 +1,28 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Env & secrets
+.env
+.env.*
+
+# Node/React
+node_modules/
+dist/
+build/
+
+# OS/editor stuff
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Data & models
+data/
+*.mmdb
+*.pkl
