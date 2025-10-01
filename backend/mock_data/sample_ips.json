@@ -1,0 +1,12 @@
+[
+  {"ip": "8.8.8.8", "countryCode": "US", "latitude": 37.386, "longitude": -122.084, "isp": "Google LLC", "domain": "google.com"},
+  {"ip": "1.1.1.1", "countryCode": "AU", "latitude": -33.494, "longitude": 143.2104, "isp": "Cloudflare", "domain": "cloudflare.com"},
+  {"ip": "208.67.222.222", "countryCode": "US", "latitude": 37.751, "longitude": -97.822, "isp": "OpenDNS", "domain": "opendns.com"},
+  {"ip": "9.9.9.9", "countryCode": "US", "latitude": 40.7128, "longitude": -74.006, "isp": "Quad9", "domain": "quad9.net"},
+  {"ip": "185.228.168.9", "countryCode": "IL", "latitude": 31.0461, "longitude": 34.8516, "isp": "CleanBrowsing", "domain": "cleanbrowsing.org"},
+  {"ip": "64.6.64.6", "countryCode": "US", "latitude": 38.627, "longitude": -90.1994, "isp": "Verisign", "domain": "verisign.com"},
+  {"ip": "77.88.8.8", "countryCode": "RU", "latitude": 55.7512, "longitude": 37.6184, "isp": "Yandex", "domain": "yandex.ru"},
+  {"ip": "114.114.114.114", "countryCode": "CN", "latitude": 39.9042, "longitude": 116.4074, "isp": "114DNS", "domain": "114dns.com"},
+  {"ip": "8.26.56.26", "countryCode": "US", "latitude": 41.8781, "longitude": -87.6298, "isp": "Comodo", "domain": "comodo.com"},
+  {"ip": "199.85.126.10", "countryCode": "US", "latitude": 37.3382, "longitude": -121.8863, "isp": "Norton ConnectSafe", "domain": "norton.com"}
+]
