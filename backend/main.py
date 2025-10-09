@@ -375,6 +375,11 @@ async def mock_attack_stream(websocket: WebSocket):
     """Stream mock attack events for fallback mode."""
     logger.info("Starting mock attack stream")
     try:
+        # Check if WebSocket is still connected before sending
+        if websocket.client_state != websocket.client_state.CONNECTED:
+            logger.info("WebSocket disconnected, stopping mock stream")
+            return
+            
         await websocket.send_json({
             "type": "status",
             "message": "Using fallback/mock stream",
@@ -382,16 +387,27 @@ async def mock_attack_stream(websocket: WebSocket):
         })
         
         while True:
+            # Check WebSocket state before each iteration
+            if websocket.client_state != websocket.client_state.CONNECTED:
+                logger.info("WebSocket disconnected during mock stream, stopping")
+                break
+                
             # Generate mock DShield events
             mock_events = await generate_mock_dshield_events(count=random.randint(1, 3))
             
             for event in mock_events:
+                # Check WebSocket state before each send
+                if websocket.client_state != websocket.client_state.CONNECTED:
+                    logger.info("WebSocket disconnected while sending mock events, stopping")
+                    return
+                    
                 try:
                     await websocket.send_json({"type": "attack", "data": event})
                     logger.debug(f"Sent mock event: {event['id']}")
                 except Exception as send_error:
                     logger.error(f"Failed to send mock event: {send_error}")
-                    raise
+                    # If send fails, likely due to disconnection, break out
+                    return
             
             # Random delay between batches
             delay = random.uniform(2.0, 6.0)
@@ -402,14 +418,16 @@ async def mock_attack_stream(websocket: WebSocket):
         logger.info("Client disconnected from mock attack stream")
     except Exception as e:
         logger.error(f"Error in mock attack stream: {str(e)}")
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Mock stream error: {str(e)}",
-                "timestamp": datetime.utcnow().isoformat() + "Z"
-            })
-        except Exception:
-            pass
+        # Only try to send error if WebSocket is still connected
+        if websocket.client_state == websocket.client_state.CONNECTED:
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Mock stream error: {str(e)}",
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                })
+            except Exception:
+                pass
 
 # API Endpoints
 @app.get("/health")
@@ -750,14 +768,19 @@ async def ws_dshield_attacks(websocket: WebSocket):
 
     async def send_status(message: str):
         try:
+            # Check WebSocket state before sending
+            if websocket.client_state != websocket.client_state.CONNECTED:
+                logger.info("WebSocket disconnected, cannot send status message")
+                return False
             await websocket.send_json({
                 "type": "status",
                 "message": message,
                 "timestamp": datetime.utcnow().isoformat() + "Z"
             })
+            return True
         except Exception as e:
             logger.error(f"Failed to send status message: {e}")
-            raise
+            return False
 
     if USE_MOCK or MODE == "fallback":
         await send_status("Using fallback/mock stream")
@@ -765,7 +788,9 @@ async def ws_dshield_attacks(websocket: WebSocket):
         return
 
     try:
-        await send_status("Connected to DShield stream")
+        if not await send_status("Connected to DShield stream"):
+            logger.info("WebSocket disconnected during initial status, stopping")
+            return
 
         sent_events = set()
         backoff = 1.0
@@ -774,6 +799,11 @@ async def ws_dshield_attacks(websocket: WebSocket):
         attempts = 0
 
         while True:
+            # Check WebSocket state before each iteration
+            if websocket.client_state != websocket.client_state.CONNECTED:
+                logger.info("WebSocket disconnected during main loop, stopping")
+                break
+                
             try:
                 logger.debug(f"DShield fetch attempt {attempts + 1}")
                 events = await fetch_dshield_events(max_retries=1, base_delay=1.0)
@@ -781,10 +811,14 @@ async def ws_dshield_attacks(websocket: WebSocket):
                 if not events:
                     attempts += 1
                     logger.warning(f"DShield returned no events (attempt {attempts})")
-                    await send_status("DShield feed offline")
+                    if not await send_status("DShield feed offline"):
+                        logger.info("WebSocket disconnected while sending offline status, stopping")
+                        break
                     if attempts >= fallback_after:
                         logger.info("Switching to fallback after failed attempts")
-                        await send_status("Switching to fallback/mock stream")
+                        if not await send_status("Switching to fallback/mock stream"):
+                            logger.info("WebSocket disconnected while switching to fallback, stopping")
+                            break
                         await mock_attack_stream(websocket)
                         return
                     await asyncio.sleep(min(max_backoff, backoff))
@@ -803,11 +837,16 @@ async def ws_dshield_attacks(websocket: WebSocket):
                         new_events.append(event)
 
                 for event in new_events:
+                    # Check WebSocket state before each send
+                    if websocket.client_state != websocket.client_state.CONNECTED:
+                        logger.info("WebSocket disconnected while sending events, stopping")
+                        return
                     try:
                         await websocket.send_json({"type": "attack", "data": event})
                     except Exception as send_error:
                         logger.error(f"Failed to send event {event.get('id', 'unknown')}: {send_error}")
-                        raise
+                        # If send fails, likely due to disconnection, break out
+                        return
 
                 if new_events:
                     logger.info(f"Sent {len(new_events)} new DShield events")
@@ -822,18 +861,22 @@ async def ws_dshield_attacks(websocket: WebSocket):
 
             except Exception as fetch_error:
                 logger.error(f"DShield fetch error: {fetch_error}")
-                try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"DShield fetch failed: {str(fetch_error)}",
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
-                    })
-                except Exception:
-                    pass
+                # Only try to send error if WebSocket is still connected
+                if websocket.client_state == websocket.client_state.CONNECTED:
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"DShield fetch failed: {str(fetch_error)}",
+                            "timestamp": datetime.utcnow().isoformat() + "Z"
+                        })
+                    except Exception:
+                        pass
                 attempts += 1
                 if attempts >= fallback_after:
                     logger.info("Switching to fallback due to repeated errors")
-                    await send_status("Switching to fallback/mock stream due to errors")
+                    if not await send_status("Switching to fallback/mock stream due to errors"):
+                        logger.info("WebSocket disconnected while switching to fallback, stopping")
+                        break
                     await mock_attack_stream(websocket)
                     return
                 await asyncio.sleep(min(max_backoff, backoff))
@@ -843,18 +886,22 @@ async def ws_dshield_attacks(websocket: WebSocket):
         logger.info("DShield WebSocket client disconnected")
     except Exception as e:
         logger.error(f"DShield WebSocket error: {e}")
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "message": f"WebSocket error: {str(e)}",
-                "timestamp": datetime.utcnow().isoformat() + "Z"
-            })
-        except Exception:
-            pass
+        # Only try to send error if WebSocket is still connected
+        if websocket.client_state == websocket.client_state.CONNECTED:
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"WebSocket error: {str(e)}",
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                })
+            except Exception:
+                pass
         try:
             await websocket.close()
         except Exception:
             pass
+    finally:
+        logger.info("DShield WebSocket connection cleanup completed")
 
 # Debug endpoints
 @app.get("/api/debug/dshield")
