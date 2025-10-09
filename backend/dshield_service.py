@@ -4,16 +4,13 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 
 import httpx
+import xmltodict
 from geo_service import ip_to_location
 
 logger = logging.getLogger(__name__)
 
-DSHIELD_TOP_IPS_URL = (
-    "https://isc.sans.edu/api/topips/records/50/json"
-)
-DSHIELD_TOP_COUNTRIES_URL = (
-    "https://isc.sans.edu/api/topcountries/records/20/json"
-)
+DSHIELD_TOP_IPS_URL = "https://isc.sans.edu/api/topips/records/50/json"
+DSHIELD_TOP_COUNTRIES_URL = "https://isc.sans.edu/api/topcountries/records/20/json"
 
 
 async def fetch_dshield_top_ips():
@@ -22,9 +19,7 @@ async def fetch_dshield_top_ips():
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(DSHIELD_TOP_IPS_URL, timeout=20)
-            logger.info(
-                f"DShield status={resp.status_code} length={len(resp.text)}"
-            )
+            logger.info(f"DShield status={resp.status_code} length={len(resp.text)}")
             resp.raise_for_status()
 
             # Log response content type and first 100 chars
@@ -32,70 +27,79 @@ async def fetch_dshield_top_ips():
             logger.info(f"DShield content-type: {content_type}")
             logger.debug(f"DShield response preview: {resp.text[:100]}")
 
-            try:
-                data = resp.json()
-                logger.info("DShield response parsed as JSON successfully")
-                entries = data.get("topips", [])
-            except Exception as json_err:
-                logger.warning(f"DShield JSON parse failed: {json_err}")
-                # Check if XML
-                if resp.text.strip().startswith(
-                    "<?xml"
-                ) or resp.text.strip().startswith("<"):
-                    logger.info("DShield returned XML, parsing as XML")
-                    try:
-                        root = ET.fromstring(resp.text)
-                        entries = []
-                        # Handle different XML structures
-                        for ip_elem in root.findall(".//ipaddress"):
-                            ip = ip_elem.findtext("source") or ip_elem.findtext("ip")
-                            attacks = (
-                                ip_elem.findtext("reports")
-                                or ip_elem.findtext("attacks")
-                                or "0"
-                            )
-                            attack_count = int(attacks)
-                            if ip:
-                                geo = ip_to_location(ip)
-                                entries.append(
-                                    {
+            # DShield API returns XML, so parse it directly
+            if resp.text.strip().startswith("<?xml") or resp.text.strip().startswith("<"):
+                logger.info("DShield returned XML, parsing with xmltodict")
+                try:
+                    # Parse XML to dict using xmltodict
+                    xml_data = xmltodict.parse(resp.text)
+                    logger.debug(f"XML parsed to dict: {xml_data}")
+                    
+                    # Extract IP entries from the XML structure
+                    entries = []
+                    if "topips" in xml_data and "ipaddress" in xml_data["topips"]:
+                        ip_list = xml_data["topips"]["ipaddress"]
+                        # Handle both single item and list cases
+                        if not isinstance(ip_list, list):
+                            ip_list = [ip_list]
+                        
+                        for ip_elem in ip_list:
+                            try:
+                                rank = int(ip_elem.get("rank", 0))
+                                ip = ip_elem.get("source", "")
+                                reports = int(ip_elem.get("reports", 0))
+                                targets = int(ip_elem.get("targets", 0))
+                                
+                                if ip:  # Only process valid IPs
+                                    geo = ip_to_location(ip)
+                                    entries.append({
+                                        "rank": rank,
                                         "ip": ip,
+                                        "reports": reports,
+                                        "targets": targets,
                                         "countryCode": geo.get("country", "--"),
                                         "latitude": geo.get("latitude", 0.0),
                                         "longitude": geo.get("longitude", 0.0),
-                                        "attackCount": attack_count,
+                                        "attackCount": reports,  # Use reports as attack count
                                         "source": "dshield",
-                                    }
-                                )
-                        logger.info(
-                            f"DShield XML parsed successfully: {len(entries)} entries"
-                        )
-                        return entries
-                    except Exception as xml_err:
-                        logger.error(f"DShield XML parse failed: {xml_err}")
-                        logger.error(f"DShield raw response: {resp.text[:500]}")
-                        return []
-                else:
-                    logger.error(f"DShield response is neither JSON nor XML")
+                                    })
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"Failed to parse IP entry: {ip_elem}, error: {e}")
+                                continue
+                    
+                    logger.info(f"DShield XML parsed successfully: {len(entries)} entries")
+                    return entries
+                    
+                except Exception as xml_err:
+                    logger.error(f"DShield XML parse failed: {xml_err}")
+                    logger.error(f"DShield raw response: {resp.text[:500]}")
+                    return []
+            else:
+                # Try JSON as fallback (though DShield typically returns XML)
+                try:
+                    data = resp.json()
+                    logger.info("DShield response parsed as JSON successfully")
+                    entries = data.get("topips", [])
+                    result = []
+                    for entry in entries:
+                        ip = entry.get("ip")
+                        attack_count = int(entry.get("attacks", 0))
+                        geo = ip_to_location(ip)
+                        result.append({
+                            "ip": ip,
+                            "countryCode": geo.get("country", "--"),
+                            "latitude": geo.get("latitude", 0.0),
+                            "longitude": geo.get("longitude", 0.0),
+                            "attackCount": attack_count,
+                            "source": "dshield",
+                        })
+                    return result
+                except Exception as json_err:
+                    logger.error(f"DShield JSON parse failed: {json_err}")
+                    logger.error(f"DShield response is neither valid XML nor JSON")
                     logger.error(f"DShield raw response: {resp.text[:200]}")
                     return []
-            # If JSON worked
-            result = []
-            for entry in entries:
-                ip = entry.get("ip")
-                attack_count = int(entry.get("attacks", 0))
-                geo = ip_to_location(ip)
-                result.append(
-                    {
-                        "ip": ip,
-                        "countryCode": geo.get("country", "--"),
-                        "latitude": geo.get("latitude", 0.0),
-                        "longitude": geo.get("longitude", 0.0),
-                        "attackCount": attack_count,
-                        "source": "dshield",
-                    }
-                )
-            return result
+                    
     except Exception as e:
         logger.error(f"DShield fetch failed: {e}")
         return []
@@ -175,55 +179,59 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
 
                 content_type = resp.headers.get("content-type", "").lower()
                 logger.info(f"DShield events content-type: {content_type}")
-                data = None
-
-                # Try JSON first
-                if "json" in content_type or resp.text.strip().startswith("{"):
+                
+                # DShield API returns XML, so parse it directly
+                if resp.text.strip().startswith("<?xml") or resp.text.strip().startswith("<"):
+                    logger.info("DShield events returned XML, parsing with xmltodict")
+                    try:
+                        # Parse XML to dict using xmltodict
+                        xml_data = xmltodict.parse(resp.text)
+                        logger.debug(f"XML parsed to dict: {xml_data}")
+                        
+                        # Extract IP entries from the XML structure
+                        entries = []
+                        if "topips" in xml_data and "ipaddress" in xml_data["topips"]:
+                            ip_list = xml_data["topips"]["ipaddress"]
+                            # Handle both single item and list cases
+                            if not isinstance(ip_list, list):
+                                ip_list = [ip_list]
+                            
+                            for ip_elem in ip_list:
+                                try:
+                                    rank = int(ip_elem.get("rank", 0))
+                                    ip = ip_elem.get("source", "")
+                                    reports = int(ip_elem.get("reports", 0))
+                                    targets = int(ip_elem.get("targets", 0))
+                                    
+                                    if ip:  # Only process valid IPs
+                                        entries.append({
+                                            "rank": rank,
+                                            "ip": ip,
+                                            "reports": reports,
+                                            "targets": targets,
+                                            "attacks": reports,  # Use reports as attacks for compatibility
+                                        })
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(f"Failed to parse IP entry: {ip_elem}, error: {e}")
+                                    continue
+                        
+                        logger.info(f"DShield events XML parsed successfully: {len(entries)} entries")
+                        
+                    except Exception as xml_err:
+                        logger.error(f"DShield events XML parse failed: {xml_err}")
+                        logger.error(f"DShield events raw response: {resp.text[:500]}")
+                        entries = []
+                else:
+                    # Try JSON as fallback (though DShield typically returns XML)
                     try:
                         data = resp.json()
                         logger.info("DShield events response parsed as JSON")
+                        entries = data.get("topips", [])
                     except Exception as json_err:
-                        logger.warning(f"DShield events JSON parse failed: {json_err}")
-
-                # Try XML if JSON failed
-                if data is None and (
-                    "xml" in content_type or resp.text.strip().startswith("<")
-                ):
-                    try:
-                        root = ET.fromstring(resp.text)
-                        logger.info("DShield events response parsed as XML")
-                        # Convert XML to dict-like structure for consistent processing
-                        data = {"topips": []}
-                        for ip_elem in root.findall(".//ipaddress"):
-                            ip = ip_elem.findtext("source") or ip_elem.findtext("ip")
-                            attacks = (
-                                ip_elem.findtext("reports")
-                                or ip_elem.findtext("attacks")
-                                or "0"
-                            )
-                            if ip:
-                                data["topips"].append(
-                                    {"ip": ip, "attacks": int(attacks)}
-                                )
-                    except Exception as xml_err:
-                        logger.error(f"DShield events XML parse failed: {xml_err}")
-                        data = None
-
-                if not data:
-                    logger.error("Could not parse DShield events response")
-                    return []
-
-                # Extract entries from different response formats
-                entries = []
-                if isinstance(data, dict):
-                    if "topips" in data:
-                        entries = data["topips"]
-                    elif "response" in data and "topips" in data["response"]:
-                        entries = data["response"]["topips"]
-                    elif "ip" in data:
-                        entries = (
-                            [data["ip"]] if isinstance(data["ip"], dict) else data["ip"]
-                        )
+                        logger.error(f"DShield events JSON parse failed: {json_err}")
+                        logger.error(f"DShield events response is neither valid XML nor JSON")
+                        logger.error(f"DShield events raw response: {resp.text[:200]}")
+                        entries = []
 
                 # Normalize entries
                 normalized_events = []
@@ -233,9 +241,7 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
                         if normalized:
                             normalized_events.append(normalized)
 
-                logger.info(
-                    f"DShield events fetch successful: {len(normalized_events)} events"
-                )
+                logger.info(f"DShield events fetch successful: {len(normalized_events)} events")
                 return normalized_events
 
         except Exception as e:
