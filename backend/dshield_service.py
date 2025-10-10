@@ -135,11 +135,29 @@ async def fetch_dshield_top_countries():
 
 
 def normalize_dshield_event(entry, target_ip="0.0.0.0"):
-    """Normalize a DShield entry into a standardized attack event format."""
+    """Normalize a DShield entry into a standardized attack event format.
+    Never returns None - always returns valid event with defaults on error."""
     try:
         ip = entry.get("ip", "")
+        if not ip:
+            logger.warning("⚠️ DShield entry missing IP, skipping")
+            return None
+            
         attack_count = int(entry.get("attacks", entry.get("attackCount", 0)))
-        geo = ip_to_location(ip)
+        
+        # Get geo data with error handling
+        try:
+            geo = ip_to_location(ip)
+        except Exception as geo_err:
+            logger.warning(f"⚠️ Geo lookup failed for {ip}, using defaults: {geo_err}")
+            geo = {
+                "latitude": 0.0,
+                "longitude": 0.0,
+                "country": "--",
+                "countryName": "Unknown",
+                "isp": "Unknown ISP",
+                "domain": ""
+            }
 
         # Generate a unique event ID
         event_id = f"dshield-{ip}-{int(datetime.utcnow().timestamp())}"
@@ -161,12 +179,12 @@ def normalize_dshield_event(entry, target_ip="0.0.0.0"):
             "source": "dshield",
             "attack_count": attack_count,
             "country_code": geo.get("country", "--"),
-            "country_name": geo.get("countryName", ""),
-            "isp": geo.get("isp", ""),
+            "country_name": geo.get("countryName", "Unknown"),
+            "isp": geo.get("isp", "Unknown ISP"),
             "domain": geo.get("domain", ""),
         }
     except Exception as e:
-        logger.error(f"Failed to normalize DShield event: {e}")
+        logger.error(f"❌ Failed to normalize DShield event for {entry.get('ip', 'unknown')}: {e}")
         return None
 
 

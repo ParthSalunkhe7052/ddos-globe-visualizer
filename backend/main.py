@@ -255,12 +255,21 @@ def random_ip():
 
 # IP enrichment function
 async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
+    """Enrich IP with geo and abuse data. Never blocks on failure."""
     now = datetime.utcnow()
     cached = EnrichCache.get(ip)
     if cached and cached["expires"] > now:
         return cached["data"]
 
-    geo = {}
+    # Default values to ensure we always return valid data
+    geo = {
+        "countryCode": "--",
+        "countryName": "Unknown",
+        "lat": 0.0,
+        "lon": 0.0,
+        "isp": "Unknown ISP",
+    }
+    
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
@@ -271,15 +280,18 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
                 g = r.json()
                 if g.get("status") == "success":
                     geo = {
-                        "countryCode": g.get("countryCode"),
-                        "countryName": g.get("country"),
-                        "lat": g.get("lat"),
-                        "lon": g.get("lon"),
-                        "isp": g.get("isp"),
+                        "countryCode": g.get("countryCode", "--"),
+                        "countryName": g.get("country", "Unknown"),
+                        "lat": g.get("lat", 0.0),
+                        "lon": g.get("lon", 0.0),
+                        "isp": g.get("isp", "Unknown ISP"),
                     }
+                else:
+                    logger.debug(f"Geo API returned non-success for {ip}: {g.get('status')}")
     except Exception as e:
-        logger.warning(f"Geo enrichment failed for {ip}: {e}")
+        logger.warning(f"⚠️ Geo enrichment failed for {ip}, using defaults: {e}")
 
+    # Reverse DNS lookup (optional, non-blocking)
     domain = None
     try:
         import socket
@@ -290,8 +302,10 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
             timeout=1,
         )
     except Exception:
+        logger.debug(f"Reverse DNS lookup failed for {ip}")
         domain = None
 
+    # AbuseIPDB lookup (optional, non-blocking)
     abuse = None
     if (
         use_abuseipdb
@@ -307,7 +321,7 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
                     timeout=8,
                 )
                 if resp.status_code == 429:
-                    logger.warning("AbuseIPDB 429: quota exceeded, blocking for 24h")
+                    logger.warning("⚠️ AbuseIPDB 429: quota exceeded, blocking for 24h")
                     AbuseIPDB429["blocked_until"] = now + timedelta(hours=24)
                 elif resp.status_code == 200:
                     abuse_data = resp.json().get("data", {})
@@ -319,10 +333,11 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
                         "lastReportedAt": abuse_data.get("lastReportedAt", None),
                     }
         except Exception as e:
-            logger.warning(f"AbuseIPDB enrich failed for {ip}: {e}")
+            logger.warning(f"⚠️ AbuseIPDB enrich failed for {ip}, continuing without abuse data: {e}")
 
     result = {"ip": ip, **geo, "domain": domain, "abuse": abuse}
     EnrichCache[ip] = {"data": result, "expires": now + timedelta(hours=24)}
+    logger.debug(f"✅ Enriched IP {ip}: {geo.get('countryCode')}, {geo.get('lat')}, {geo.get('lon')}")
     return result
 
 
@@ -799,19 +814,53 @@ async def health_abuseipdb():
 
 
 @app.post("/api/debug/feed_mode")
-async def set_feed_mode(mode: str = Query(..., pattern="^(live|fallback)$")):
-    """Set live feed mode: 'live' (DShield) or 'fallback' (mock)."""
+async def set_feed_mode(request: Request):
+    """Set live feed mode: 'live' (DShield) or 'fallback' (mock).
+    Accepts both JSON body and query parameter."""
     global FEED_MODE
-    if mode not in ("live", "fallback"):
+    
+    try:
+        # Try to get mode from JSON body first
+        try:
+            body = await request.json()
+            mode = body.get("mode")
+            logger.info(f"📥 Received feed_mode request via JSON body: {body}")
+        except Exception:
+            # Fall back to query parameter
+            mode = request.query_params.get("mode")
+            logger.info(f"📥 Received feed_mode request via query param: mode={mode}")
+        
+        if not mode:
+            logger.error("❌ No mode provided in request")
+            return log_and_respond(
+                False,
+                error="MISSING_MODE",
+                message="mode parameter required (either in body or query)",
+                status_code=400,
+            )
+        
+        if mode not in ("live", "fallback"):
+            logger.error(f"❌ Invalid mode provided: {mode}")
+            return log_and_respond(
+                False,
+                error="INVALID_MODE",
+                message="mode must be 'live' or 'fallback'",
+                status_code=400,
+            )
+        
+        old_mode = FEED_MODE
+        FEED_MODE = mode
+        logger.info(f"✅ Feed mode changed from '{old_mode}' to '{FEED_MODE}'")
+        return log_and_respond(True, data={"mode": FEED_MODE, "previous_mode": old_mode})
+        
+    except Exception as e:
+        logger.error(f"❌ Error in set_feed_mode: {e}", exc_info=True)
         return log_and_respond(
             False,
-            error="INVALID_MODE",
-            message="mode must be 'live' or 'fallback'",
-            status_code=400,
+            error="FEED_MODE_ERROR",
+            message=str(e),
+            status_code=500,
         )
-    FEED_MODE = mode
-    logger.info(f"Feed mode set to: {FEED_MODE}")
-    return log_and_respond(True, data={"mode": FEED_MODE})
 
 
 @app.get("/analyze_ip")
