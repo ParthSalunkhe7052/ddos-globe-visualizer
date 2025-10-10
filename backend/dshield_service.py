@@ -9,7 +9,7 @@ from geo_service import ip_to_location
 
 logger = logging.getLogger(__name__)
 
-DSHIELD_TOP_IPS_URL = "https://isc.sans.edu/api/topips/records/50/json"
+DSHIELD_TOP_IPS_URL = "https://isc.sans.edu/api/topips/"
 DSHIELD_TOP_COUNTRIES_URL = "https://isc.sans.edu/api/topcountries/records/20/json"
 
 

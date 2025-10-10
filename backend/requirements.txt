@@ -2,4 +2,12 @@ fastapi
 uvicorn[standard]
 httpx
 python-dotenv
+pydantic
 websockets
+xmltodict
+jinja2
+
+# Dev tools
+black
+isort
+pre-commit

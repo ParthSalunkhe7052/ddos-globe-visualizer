@@ -25,7 +25,7 @@ export default function Sidebar({
 }) {
   return (
     <aside
-      className={`sidebar${open ? ' open' : ''} ${theme}`}
+      className={`sidebar${open ? ' open' : ''}`}
       aria-label="Sidebar"
       style={{
         transform: open ? 'translateX(0)' : 'translateX(-100%)',
@@ -36,11 +36,11 @@ export default function Sidebar({
         height: '100vh',
         width: 260,
         zIndex: 100,
-        background: theme === 'dark' ? 'rgba(24,24,24,0.98)' : '#f7f7f7',
-        color: theme === 'dark' ? '#f1f1f1' : '#181818',
-        boxShadow: '2px 0 12px rgba(0,0,0,0.12)',
+        background: 'rgba(18,18,18,0.98)',
+        color: '#f1f1f1',
+        boxShadow: '2px 0 12px rgba(0,0,0,0.25)',
         overflowY: 'auto',
-        borderRight: theme === 'dark' ? '1px solid #333' : '1px solid #ddd',
+        borderRight: '1px solid #2a2a2a',
         display: 'flex',
         flexDirection: 'column',
         gap: 18,
@@ -50,7 +50,7 @@ export default function Sidebar({
       {/* Sidebar content, no close button */}
       <div style={{ padding: '48px 18px 18px 18px', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, overflowY: 'auto' }}>
         {/* Recent IPs */}
-        <section style={{ background: theme === 'dark' ? 'rgba(20,20,20,0.75)' : '#fff', border: theme === 'dark' ? '1px solid #FFD70033' : '1px solid #FFD70055', borderRadius: 10, padding: 10 }}>
+        <section style={{ background: 'rgba(20,20,20,0.9)', border: '1px solid #FFD54F33', borderRadius: 12, padding: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 8, color: '#FFD700' }}>Recent IPs</div>
           {recentIps.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -59,7 +59,7 @@ export default function Sidebar({
                   key={recent}
                   type="button"
                   className="ip-button"
-                  style={{ padding: '2px 10px', fontSize: '0.92em', background: '#222', border: '1px solid #FFD700', color: '#FFD700' }}
+                  style={{ padding: '6px 10px', fontSize: '0.92em', background: '#1e1e1e', border: '1px solid #FFD54F', color: '#FFD54F', borderRadius: 10 }}
                   onClick={() => setIp(recent)}
                   title={`Analyze ${recent}`}
                 >
@@ -69,7 +69,7 @@ export default function Sidebar({
               <button
                 type="button"
                 className="ip-button"
-                style={{ marginTop: 6, padding: '2px 10px', fontSize: '0.92em', background: '#333', border: '1px solid #FFD700', color: '#FFD700', alignSelf: 'flex-end' }}
+                style={{ marginTop: 6, padding: '6px 10px', fontSize: '0.92em', background: '#2a2a2a', border: '1px solid #FFD54F', color: '#FFD54F', alignSelf: 'flex-end', borderRadius: 10 }}
                 onClick={() => {
                   setRecentIps([]);
                   localStorage.removeItem('recentIps');
@@ -89,7 +89,7 @@ export default function Sidebar({
           <button
             type="button"
             className="ip-button"
-            style={{ flex: 1, padding: '6px 0', background: '#181818', border: '1px solid #FFD700', color: '#FFD700', borderRadius: 6, fontWeight: 600 }}
+            style={{ flex: 1, padding: '10px 0', background: '#181818', border: '1px solid #FFD54F', color: '#FFD54F', borderRadius: 12, fontWeight: 600 }}
             onClick={handleExportCSV}
             title="Export recent IPs and info to CSV"
           >
@@ -98,7 +98,7 @@ export default function Sidebar({
           <button
             type="button"
             className="ip-button"
-            style={{ flex: 1, padding: '6px 0', background: '#222', border: '1px solid #FFD700', color: '#FFD700', borderRadius: 6, fontWeight: 600 }}
+            style={{ flex: 1, padding: '10px 0', background: '#222', border: '1px solid #FFD54F', color: '#FFD54F', borderRadius: 12, fontWeight: 600 }}
             onClick={handleClearAll}
             title="Reset all data and globe view"
           >
@@ -107,14 +107,14 @@ export default function Sidebar({
         </section>
 
         {/* Live Stats (single heading, no extra box) */}
-        <section style={{ background: theme === 'dark' ? 'rgba(20,20,20,0.75)' : '#fff', border: theme === 'dark' ? '1px solid #FFD70033' : '1px solid #FFD70055', borderRadius: 10, padding: 10 }}>
+        <section style={{ background: 'rgba(20,20,20,0.9)', border: '1px solid #FFD54F33', borderRadius: 12, padding: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 8, color: '#FFD700' }}>Live Stats</div>
           {/* StatsPanel should not render its own heading */}
           <StatsPanel points={points} hideHeading />
         </section>
 
         {/* Filters */}
-        <section style={{ background: theme === 'dark' ? 'rgba(20,20,20,0.75)' : '#fff', border: theme === 'dark' ? '1px solid #FFD70033' : '1px solid #FFD70055', borderRadius: 10, padding: 10 }}>
+        <section style={{ background: 'rgba(20,20,20,0.9)', border: '1px solid #FFD54F33', borderRadius: 12, padding: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 8, color: '#FFD700' }}>Filters</div>
           <div style={{ marginBottom: 8 }}>
             <label htmlFor="sidebar-filter-country" style={{ fontSize: 13, marginRight: 6 }}>Country:</label>
@@ -122,7 +122,7 @@ export default function Sidebar({
               id="sidebar-filter-country"
               value={filterCountry}
               onChange={e => setFilterCountry(e.target.value)}
-              style={{ background: '#18191a', color: '#FFD700', borderRadius: 6, padding: '4px 8px', border: '1px solid #FFD700', minWidth: 90 }}
+              style={{ background: '#18191a', color: '#FFD54F', borderRadius: 10, padding: '6px 10px', border: '1px solid #FFD54F', minWidth: 90 }}
               aria-label="Filter by country"
             >
               <option value="">All</option>
@@ -137,7 +137,7 @@ export default function Sidebar({
               id="sidebar-filter-severity"
               value={filterSeverity}
               onChange={e => setFilterSeverity(e.target.value)}
-              style={{ background: '#18191a', color: '#FFD700', borderRadius: 6, padding: '4px 8px', border: '1px solid #FFD700', minWidth: 90 }}
+              style={{ background: '#18191a', color: '#FFD54F', borderRadius: 10, padding: '6px 10px', border: '1px solid #FFD54F', minWidth: 90 }}
               aria-label="Filter by severity"
             >
               <option value="">All</option>
@@ -149,7 +149,7 @@ export default function Sidebar({
           <button
             type="button"
             className="ip-button"
-            style={{ marginTop: 8, padding: '6px 0', background: heatmapMode ? '#FFD700' : '#181818', border: '1px solid #FFD700', color: heatmapMode ? '#181818' : '#FFD700', borderRadius: 6, fontWeight: 600, width: '100%' }}
+            style={{ marginTop: 8, padding: '10px 0', background: heatmapMode ? '#FFD54F' : '#181818', border: '1px solid #FFD54F', color: heatmapMode ? '#181818' : '#FFD54F', borderRadius: 12, fontWeight: 600, width: '100%' }}
             onClick={() => setHeatmapMode(prev => !prev)}
             title={heatmapMode ? 'Disable heatmap coloring' : 'Enable heatmap coloring'}
             aria-pressed={heatmapMode}

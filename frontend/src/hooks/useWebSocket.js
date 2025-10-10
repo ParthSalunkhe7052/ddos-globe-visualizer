@@ -19,11 +19,11 @@ const MAX_EVENTS = 500;
 export default function useWebSocket({ url = DEFAULT_WS_URL, autoConnect = true } = {}) {
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
-  const liveModeRef = useRef(true);
+  const liveModeRef = useRef(false);
 
   const [isConnected, setIsConnected] = useState(false);
   const [events, setEvents] = useState([]); // newest-first array of normalized events
-  const [liveMode, setLiveMode] = useState(true);
+  const [liveMode, setLiveMode] = useState(false);
 
   // keep liveModeRef in sync (so event handler reads latest value)
   useEffect(() => { liveModeRef.current = liveMode; }, [liveMode]);

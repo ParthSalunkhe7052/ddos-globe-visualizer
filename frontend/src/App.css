@@ -1,14 +1,28 @@
-.globe-wrapper { position: relative; }
-.globe-wrapper canvas {
-  cursor: default !important; /* default arrow */
-  pointer-events: auto !important;
+.app-container {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+  overflow: hidden;
+  background: #111;
 }
+
+.globe-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  z-index: 1;
+}
+
+.globe-container canvas {
+  cursor: move;
+}
+
 .spinner {
-  width: 48px;
-  height: 48px;
-  border: 4px solid #ccc;
-  border-top: 4px solid #333;
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(255, 215, 0, 0.3);
   border-radius: 50%;
+  border-top-color: #FFD700;
   animation: spin 1s linear infinite;
 }
 

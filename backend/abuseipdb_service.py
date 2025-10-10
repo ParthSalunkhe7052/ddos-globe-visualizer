@@ -6,6 +6,9 @@ import pprint
 import requests
 from dotenv import load_dotenv
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 cwd = os.getcwd()
 env_path = os.path.join(cwd, ".env")
 print(f"[DEBUG abuseipdb_service] Current working directory: {cwd}")

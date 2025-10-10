@@ -1,14 +1,23 @@
 .theme-toggle-button {
-  padding: 6px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   cursor: pointer;
-  background-color: #FFD700;
-  color: #121212;
-  border: none;
-  transition: background-color 0.3s ease, transform 0.2s ease;
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  border: 1px solid var(--accent-primary);
+  font-weight: 600;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px var(--shadow-primary);
 }
 
 .theme-toggle-button:hover {
-  background-color: #e6c200;
+  background: var(--accent-secondary);
+  border-color: var(--accent-secondary);
   transform: scale(1.05);
+  box-shadow: 0 4px 8px var(--shadow-primary);
+}
+
+.theme-toggle-button:focus {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
 }

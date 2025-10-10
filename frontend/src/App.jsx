@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Globe from './components/Globe';
-import useDShieldStream from "./hooks/useDShieldStream";
+import useDShieldStream from "./hooks/useDShieldStreamFinal";
 import ThemeToggle from './components/ThemeToggle';
 import Sidebar from './components/Sidebar';
 import StatsPanel from './components/StatsPanel';
@@ -93,8 +93,8 @@ function SeverityLegend({ collapsed, onToggle, isMobile }) {
 /* =========================
    Constants & Utilities
 ========================= */
-const MAX_POINTS = 500;
 const MAX_ARCS = 500;
+const MAX_POINTS = 100;
 const LAST_N = 6;
 
 const GLOBE_TEXTURES = [
@@ -372,8 +372,10 @@ function AppContent() {
   // Ref (must be before any useEffect that uses it)
   const globeRef = useRef();
 
-  // DShield streaming hook
+  // DShield streaming hook with rate limiting
   const addDShieldArc = useCallback((arc) => {
+    console.log('[App] 🎯 Adding DShield arc:', arc.id);
+
     setArcs(prev => {
       const updated = [arc, ...prev].slice(0, MAX_ARCS);
       return updated;
@@ -385,9 +387,25 @@ function AppContent() {
       return [newRing, ...prev].slice(0, 5);
     });
 
-    // Remove arc after 30 seconds
+    // Add point at source location
+    setPoints(prev => {
+      const newPoint = {
+        id: `point-${arc.id}`,
+        lat: arc.startLat,
+        lng: arc.startLng,
+        color: arc.color,
+        size: 0.5 + (arc.confidence / 100) * 0.5,
+        timestamp: arc.timestamp,
+        source: arc.source,
+        confidence: arc.confidence
+      };
+      return [newPoint, ...prev].slice(0, MAX_POINTS);
+    });
+
+    // Remove arc and point after 30 seconds
     setTimeout(() => {
       setArcs(prev => prev.filter(a => a.id !== arc.id));
+      setPoints(prev => prev.filter(p => p.id !== `point-${arc.id}`));
     }, 30000);
   }, []);
 

@@ -1,4 +1,5 @@
 import os
+
 import geoip2.database
 
 # Path to the GeoLite2 database from .env
@@ -6,6 +7,7 @@ DB_PATH = os.getenv("GEOLITE_DB_PATH", "ml_model/GeoLite2-City.mmdb")
 
 # Create a single reader instance (thread-safe for FastAPI)
 reader = geoip2.database.Reader(DB_PATH)
+
 
 def ip_to_location(ip_address: str):
     """
@@ -18,7 +20,7 @@ def ip_to_location(ip_address: str):
             "country": response.country.name,
             "city": response.city.name,
             "latitude": response.location.latitude,
-            "longitude": response.location.longitude
+            "longitude": response.location.longitude,
         }
         return location
     except Exception as e:

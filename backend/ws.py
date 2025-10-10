@@ -1,4 +1,8 @@
+import asyncio
 import random
+import time
+
+
 # --- Fake traffic generator (toggleable via ENABLE_FAKE_TRAFFIC env var) ---
 async def generate_fake_attacks(manager, interval: float = 3.0):
     """
@@ -8,14 +12,14 @@ async def generate_fake_attacks(manager, interval: float = 3.0):
     """
     # A compact set of sample locations (lat, lon, country) for more believable visuals.
     SAMPLE_LOCATIONS = [
-        {"lat": 40.7128, "lon": -74.0060, "country": "United States"},   # NYC
-        {"lat": 51.5074, "lon": -0.1278, "country": "United Kingdom"},   # London
-        {"lat": 35.6895, "lon": 139.6917, "country": "Japan"},           # Tokyo
-        {"lat": -33.8688, "lon": 151.2093, "country": "Australia"},      # Sydney
-        {"lat": 28.6139, "lon": 77.2090, "country": "India"},            # New Delhi
+        {"lat": 40.7128, "lon": -74.0060, "country": "United States"},  # NYC
+        {"lat": 51.5074, "lon": -0.1278, "country": "United Kingdom"},  # London
+        {"lat": 35.6895, "lon": 139.6917, "country": "Japan"},  # Tokyo
+        {"lat": -33.8688, "lon": 151.2093, "country": "Australia"},  # Sydney
+        {"lat": 28.6139, "lon": 77.2090, "country": "India"},  # New Delhi
         {"lat": 34.0522, "lon": -118.2437, "country": "United States"},  # LA
-        {"lat": 48.8566, "lon": 2.3522, "country": "France"},            # Paris
-        {"lat": 55.7558, "lon": 37.6173, "country": "Russia"},           # Moscow
+        {"lat": 48.8566, "lon": 2.3522, "country": "France"},  # Paris
+        {"lat": 55.7558, "lon": 37.6173, "country": "Russia"},  # Moscow
     ]
 
     # Keep running until cancelled
@@ -24,19 +28,33 @@ async def generate_fake_attacks(manager, interval: float = 3.0):
             try:
                 loc = random.choice(SAMPLE_LOCATIONS)
                 score = random.randint(0, 100)
-                severity = "High" if score >= 70 else ("Medium" if score >= 30 else "Low")
+                severity = (
+                    "High" if score >= 70 else ("Medium" if score >= 30 else "Low")
+                )
                 # Synthetic IP — obviously not real
                 ip = f"{random.randint(1, 255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,255)}"
 
                 payload = {
                     "ip": ip,
-                    "geo_info": {"lat": loc["lat"], "lon": loc["lon"], "country": loc["country"]},
-                    "abuse_info": {"abuseConfidenceScore": score, "isp": "Simulated ISP", "type": "Botnet"},
-                    "arc": {"startLat": 0, "startLng": 0, "endLat": loc["lat"], "endLng": loc["lon"]},
+                    "geo_info": {
+                        "lat": loc["lat"],
+                        "lon": loc["lon"],
+                        "country": loc["country"],
+                    },
+                    "abuse_info": {
+                        "abuseConfidenceScore": score,
+                        "isp": "Simulated ISP",
+                        "type": "Botnet",
+                    },
+                    "arc": {
+                        "startLat": 0,
+                        "startLng": 0,
+                        "endLat": loc["lat"],
+                        "endLng": loc["lon"],
+                    },
                     "timestamp": int(time.time() * 1000),
-                    "severity": severity
+                    "severity": severity,
                 }
-
 
                 # Use the provided manager to broadcast to all connected clients
                 try:
@@ -57,16 +75,20 @@ async def generate_fake_attacks(manager, interval: float = 3.0):
     except asyncio.CancelledError:
         # final cleanup if cancellation bubbles here
         pass
+
+
 # backend/ws.py
 import asyncio
 import json
 import time
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 router = APIRouter()
 
 # set of connected WebSocket objects
 connected_websockets = set()
+
 
 def compute_severity(abuse_score):
     """Return severity string from numeric abuse_score per spec."""
@@ -80,6 +102,7 @@ def compute_severity(abuse_score):
         return "Medium"
     return "High"
 
+
 async def broadcast_event(payload: dict):
     """
     Broadcast a JSON-serializable payload to all connected websockets.
@@ -90,7 +113,9 @@ async def broadcast_event(payload: dict):
     # ensure minimum fields (non-destructive)
     try:
         if "severity" not in payload:
-            abuse_score = payload.get("abuse_score") or payload.get("abuse_info", {}).get("abuseConfidenceScore")
+            abuse_score = payload.get("abuse_score") or payload.get(
+                "abuse_info", {}
+            ).get("abuseConfidenceScore")
             payload["severity"] = compute_severity(abuse_score)
     except Exception:
         payload.setdefault("severity", "Low")
@@ -99,7 +124,12 @@ async def broadcast_event(payload: dict):
         geo = payload.get("geo_info") or {}
         endLat = geo.get("latitude") or geo.get("lat")
         endLng = geo.get("longitude") or geo.get("lon") or geo.get("lng")
-        payload["arc"] = {"startLat": 0, "startLng": 0, "endLat": endLat, "endLng": endLng}
+        payload["arc"] = {
+            "startLat": 0,
+            "startLng": 0,
+            "endLat": endLat,
+            "endLng": endLng,
+        }
 
     # timestamp in ms for timeline
     payload["timestamp"] = int(time.time() * 1000)

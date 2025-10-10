@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { getWebSocketUrl, logWebSocketInfo } from '../config/websocket';
 
 function getDefaultWsUrl() {
-    try {
-        const { protocol, host } = window.location;
-        const wsProto = protocol === 'https:' ? 'wss:' : 'ws:';
-        return `${wsProto}//${host}/ws/attacks`;
-    } catch {
-        return 'ws://127.0.0.1:8000/ws/attacks';
-    }
+    // Use the new configuration
+    return getWebSocketUrl();
 }
 
 /**
@@ -30,12 +26,17 @@ export default function useDShieldStream(liveMode, addArc, onStatus) {
             return; // Already connected
         }
 
+        // Log WebSocket configuration for debugging
+        logWebSocketInfo();
+        console.log('[useDShieldStream] 🔌 Connecting to:', wsUrl);
+
         try {
             const ws = new WebSocket(wsUrl);
             wsRef.current = ws;
 
             ws.onopen = () => {
-                console.log('[useDShieldStream] Connected to DShield stream');
+                console.log('[useDShieldStream] ✅ Connected to DShield stream at:', wsUrl);
+                console.log('[useDShieldStream] WebSocket readyState:', ws.readyState);
                 setIsConnected(true);
                 setLastError(null);
                 reconnectAttempts.current = 0;
@@ -44,26 +45,30 @@ export default function useDShieldStream(liveMode, addArc, onStatus) {
 
             ws.onmessage = (event) => {
                 try {
+                    console.log('[useDShieldStream] 📨 Received message:', event.data.length, 'bytes');
+                    console.log('[useDShieldStream] 📨 Raw message data:', event.data);
                     const msg = JSON.parse(event.data);
+                    console.log('[useDShieldStream] 📨 Parsed message type:', msg.type);
+                    console.log('[useDShieldStream] 📨 Full parsed message:', msg);
 
                     // Handle status messages
                     if (msg && msg.type === 'status') {
-                        console.log('[useDShieldStream] Status:', msg.message);
-                        onStatus && onStatus({ 
-                            connected: true, 
+                        console.log('[useDShieldStream] 📊 Status:', msg.message);
+                        onStatus && onStatus({
+                            connected: true,
                             message: msg.message,
-                            timestamp: msg.timestamp 
+                            timestamp: msg.timestamp
                         });
                         return;
                     }
 
                     // Handle error messages
                     if (msg && msg.type === 'error') {
-                        console.error('[useDShieldStream] Error:', msg.message);
-                        onStatus && onStatus({ 
-                            connected: false, 
+                        console.error('[useDShieldStream] ❌ Error:', msg.message);
+                        onStatus && onStatus({
+                            connected: false,
                             error: msg.message,
-                            timestamp: msg.timestamp 
+                            timestamp: msg.timestamp
                         });
                         return;
                     }
@@ -76,7 +81,17 @@ export default function useDShieldStream(liveMode, addArc, onStatus) {
                         const e = msg.data;
                         const confidence = Number(e.confidence ?? 0) || 0;
                         const isFallback = e.source === 'fallback/mock' || e.source === 'fallback/cache';
-                        
+
+                        console.log('[useDShieldStream] 🎯 Processing attack event:', {
+                            id: e.id,
+                            source: e.source,
+                            confidence,
+                            isFallback,
+                            src_ip: e.src_ip,
+                            src_lat: e.src_lat,
+                            src_lng: e.src_lng
+                        });
+
                         const arc = {
                             id: e.id || `dshield-${Date.now()}`,
                             startLat: e.src_lat,
@@ -92,6 +107,7 @@ export default function useDShieldStream(liveMode, addArc, onStatus) {
                             isFallback: isFallback,
                             opacity: isFallback ? 0.7 : 1.0  // Slightly transparent for fallback events
                         };
+                        console.log('[useDShieldStream] 🎯 Adding arc to globe:', arc.id);
                         addArc && addArc(arc);
                         return;
                     }
@@ -122,13 +138,18 @@ export default function useDShieldStream(liveMode, addArc, onStatus) {
             };
 
             ws.onerror = (error) => {
-                console.error('[useDShieldStream] WebSocket error:', error);
+                console.error('[useDShieldStream] ❌ WebSocket error:', error);
+                console.error('[useDShieldStream] ❌ WebSocket readyState:', ws.readyState);
                 setLastError('WebSocket connection error');
                 onStatus && onStatus({ connected: false, error: 'WebSocket connection error' });
             };
 
             ws.onclose = (event) => {
-                console.log('[useDShieldStream] WebSocket closed:', event.code, event.reason);
+                console.log('[useDShieldStream] 🔌 WebSocket closed:', {
+                    code: event.code,
+                    reason: event.reason,
+                    wasClean: event.wasClean
+                });
                 setIsConnected(false);
 
                 // Attempt to reconnect if not closed by user

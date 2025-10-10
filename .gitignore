@@ -26,3 +26,7 @@ Thumbs.db
 data/
 *.mmdb
 *.pkl
+pycache/
+*.log
+*.tmp
+*.bak
