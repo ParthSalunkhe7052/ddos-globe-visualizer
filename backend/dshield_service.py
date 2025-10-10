@@ -28,13 +28,15 @@ async def fetch_dshield_top_ips():
             logger.debug(f"DShield response preview: {resp.text[:100]}")
 
             # DShield API returns XML, so parse it directly
-            if resp.text.strip().startswith("<?xml") or resp.text.strip().startswith("<"):
+            if resp.text.strip().startswith("<?xml") or resp.text.strip().startswith(
+                "<"
+            ):
                 logger.info("DShield returned XML, parsing with xmltodict")
                 try:
                     # Parse XML to dict using xmltodict
                     xml_data = xmltodict.parse(resp.text)
                     logger.debug(f"XML parsed to dict: {xml_data}")
-                    
+
                     # Extract IP entries from the XML structure
                     entries = []
                     if "topips" in xml_data and "ipaddress" in xml_data["topips"]:
@@ -42,34 +44,40 @@ async def fetch_dshield_top_ips():
                         # Handle both single item and list cases
                         if not isinstance(ip_list, list):
                             ip_list = [ip_list]
-                        
+
                         for ip_elem in ip_list:
                             try:
                                 rank = int(ip_elem.get("rank", 0))
                                 ip = ip_elem.get("source", "")
                                 reports = int(ip_elem.get("reports", 0))
                                 targets = int(ip_elem.get("targets", 0))
-                                
+
                                 if ip:  # Only process valid IPs
                                     geo = ip_to_location(ip)
-                                    entries.append({
-                                        "rank": rank,
-                                        "ip": ip,
-                                        "reports": reports,
-                                        "targets": targets,
-                                        "countryCode": geo.get("country", "--"),
-                                        "latitude": geo.get("latitude", 0.0),
-                                        "longitude": geo.get("longitude", 0.0),
-                                        "attackCount": reports,  # Use reports as attack count
-                                        "source": "dshield",
-                                    })
+                                    entries.append(
+                                        {
+                                            "rank": rank,
+                                            "ip": ip,
+                                            "reports": reports,
+                                            "targets": targets,
+                                            "countryCode": geo.get("country", "--"),
+                                            "latitude": geo.get("latitude", 0.0),
+                                            "longitude": geo.get("longitude", 0.0),
+                                            "attackCount": reports,  # Use reports as attack count
+                                            "source": "dshield",
+                                        }
+                                    )
                             except (ValueError, TypeError) as e:
-                                logger.warning(f"Failed to parse IP entry: {ip_elem}, error: {e}")
+                                logger.warning(
+                                    f"Failed to parse IP entry: {ip_elem}, error: {e}"
+                                )
                                 continue
-                    
-                    logger.info(f"DShield XML parsed successfully: {len(entries)} entries")
+
+                    logger.info(
+                        f"DShield XML parsed successfully: {len(entries)} entries"
+                    )
                     return entries
-                    
+
                 except Exception as xml_err:
                     logger.error(f"DShield XML parse failed: {xml_err}")
                     logger.error(f"DShield raw response: {resp.text[:500]}")
@@ -85,21 +93,23 @@ async def fetch_dshield_top_ips():
                         ip = entry.get("ip")
                         attack_count = int(entry.get("attacks", 0))
                         geo = ip_to_location(ip)
-                        result.append({
-                            "ip": ip,
-                            "countryCode": geo.get("country", "--"),
-                            "latitude": geo.get("latitude", 0.0),
-                            "longitude": geo.get("longitude", 0.0),
-                            "attackCount": attack_count,
-                            "source": "dshield",
-                        })
+                        result.append(
+                            {
+                                "ip": ip,
+                                "countryCode": geo.get("country", "--"),
+                                "latitude": geo.get("latitude", 0.0),
+                                "longitude": geo.get("longitude", 0.0),
+                                "attackCount": attack_count,
+                                "source": "dshield",
+                            }
+                        )
                     return result
                 except Exception as json_err:
                     logger.error(f"DShield JSON parse failed: {json_err}")
                     logger.error(f"DShield response is neither valid XML nor JSON")
                     logger.error(f"DShield raw response: {resp.text[:200]}")
                     return []
-                    
+
     except Exception as e:
         logger.error(f"DShield fetch failed: {e}")
         return []
@@ -179,15 +189,17 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
 
                 content_type = resp.headers.get("content-type", "").lower()
                 logger.info(f"DShield events content-type: {content_type}")
-                
+
                 # DShield API returns XML, so parse it directly
-                if resp.text.strip().startswith("<?xml") or resp.text.strip().startswith("<"):
+                if resp.text.strip().startswith(
+                    "<?xml"
+                ) or resp.text.strip().startswith("<"):
                     logger.info("DShield events returned XML, parsing with xmltodict")
                     try:
                         # Parse XML to dict using xmltodict
                         xml_data = xmltodict.parse(resp.text)
                         logger.debug(f"XML parsed to dict: {xml_data}")
-                        
+
                         # Extract IP entries from the XML structure
                         entries = []
                         if "topips" in xml_data and "ipaddress" in xml_data["topips"]:
@@ -195,28 +207,34 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
                             # Handle both single item and list cases
                             if not isinstance(ip_list, list):
                                 ip_list = [ip_list]
-                            
+
                             for ip_elem in ip_list:
                                 try:
                                     rank = int(ip_elem.get("rank", 0))
                                     ip = ip_elem.get("source", "")
                                     reports = int(ip_elem.get("reports", 0))
                                     targets = int(ip_elem.get("targets", 0))
-                                    
+
                                     if ip:  # Only process valid IPs
-                                        entries.append({
-                                            "rank": rank,
-                                            "ip": ip,
-                                            "reports": reports,
-                                            "targets": targets,
-                                            "attacks": reports,  # Use reports as attacks for compatibility
-                                        })
+                                        entries.append(
+                                            {
+                                                "rank": rank,
+                                                "ip": ip,
+                                                "reports": reports,
+                                                "targets": targets,
+                                                "attacks": reports,  # Use reports as attacks for compatibility
+                                            }
+                                        )
                                 except (ValueError, TypeError) as e:
-                                    logger.warning(f"Failed to parse IP entry: {ip_elem}, error: {e}")
+                                    logger.warning(
+                                        f"Failed to parse IP entry: {ip_elem}, error: {e}"
+                                    )
                                     continue
-                        
-                        logger.info(f"DShield events XML parsed successfully: {len(entries)} entries")
-                        
+
+                        logger.info(
+                            f"DShield events XML parsed successfully: {len(entries)} entries"
+                        )
+
                     except Exception as xml_err:
                         logger.error(f"DShield events XML parse failed: {xml_err}")
                         logger.error(f"DShield events raw response: {resp.text[:500]}")
@@ -229,7 +247,9 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
                         entries = data.get("topips", [])
                     except Exception as json_err:
                         logger.error(f"DShield events JSON parse failed: {json_err}")
-                        logger.error(f"DShield events response is neither valid XML nor JSON")
+                        logger.error(
+                            f"DShield events response is neither valid XML nor JSON"
+                        )
                         logger.error(f"DShield events raw response: {resp.text[:200]}")
                         entries = []
 
@@ -241,7 +261,9 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
                         if normalized:
                             normalized_events.append(normalized)
 
-                logger.info(f"DShield events fetch successful: {len(normalized_events)} events")
+                logger.info(
+                    f"DShield events fetch successful: {len(normalized_events)} events"
+                )
                 return normalized_events
 
         except Exception as e:

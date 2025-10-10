@@ -1,17 +1,20 @@
+import logging
 from typing import Any, Dict, Optional
+
 from fastapi import FastAPI, Request, WebSocket, status
 from fastapi.responses import JSONResponse
-import logging
 from pydantic import BaseModel, ValidationError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class ErrorResponse(BaseModel):
     error: str
     message: str
     details: Optional[Dict[str, Any]] = None
+
 
 class APIError(Exception):
     def __init__(
@@ -19,7 +22,7 @@ class APIError(Exception):
         message: str,
         error_code: str,
         status_code: int = 500,
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
     ):
         self.message = message
         self.error_code = error_code
@@ -27,21 +30,24 @@ class APIError(Exception):
         self.details = details
         super().__init__(self.message)
 
+
 class InvalidIPError(APIError):
     def __init__(self, ip: str):
         super().__init__(
             message=f"Invalid IP address: {ip}",
             error_code="INVALID_IP",
-            status_code=422
+            status_code=422,
         )
+
 
 class RateLimitError(APIError):
     def __init__(self, service: str):
         super().__init__(
             message=f"Rate limit exceeded for {service}",
             error_code="RATE_LIMIT_EXCEEDED",
-            status_code=429
+            status_code=429,
         )
+
 
 class ServiceUnavailableError(APIError):
     def __init__(self, service: str, details: Optional[Dict[str, Any]] = None):
@@ -49,8 +55,9 @@ class ServiceUnavailableError(APIError):
             message=f"{service} service is currently unavailable",
             error_code="SERVICE_UNAVAILABLE",
             status_code=503,
-            details=details
+            details=details,
         )
+
 
 def setup_error_handlers(app: FastAPI):
     @app.exception_handler(APIError)
@@ -59,10 +66,8 @@ def setup_error_handlers(app: FastAPI):
         return JSONResponse(
             status_code=exc.status_code,
             content=ErrorResponse(
-                error=exc.error_code,
-                message=exc.message,
-                details=exc.details
-            ).dict(exclude_none=True)
+                error=exc.error_code, message=exc.message, details=exc.details
+            ).dict(exclude_none=True),
         )
 
     @app.exception_handler(ValidationError)
@@ -73,8 +78,8 @@ def setup_error_handlers(app: FastAPI):
             content=ErrorResponse(
                 error="VALIDATION_ERROR",
                 message="Invalid request data",
-                details={"errors": exc.errors()}
-            ).dict(exclude_none=True)
+                details={"errors": exc.errors()},
+            ).dict(exclude_none=True),
         )
 
     @app.exception_handler(Exception)
@@ -83,20 +88,22 @@ def setup_error_handlers(app: FastAPI):
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(
-                error="INTERNAL_SERVER_ERROR",
-                message="An unexpected error occurred"
-            ).dict(exclude_none=True)
+                error="INTERNAL_SERVER_ERROR", message="An unexpected error occurred"
+            ).dict(exclude_none=True),
         )
+
 
 async def handle_ws_error(websocket: WebSocket, error: APIError):
     """Handle WebSocket errors by sending error message and optionally closing connection"""
     try:
         if websocket.client_state.CONNECTED:
-            await websocket.send_json({
-                "error": error.error_code,
-                "message": error.message,
-                "details": error.details
-            })
+            await websocket.send_json(
+                {
+                    "error": error.error_code,
+                    "message": error.message,
+                    "details": error.details,
+                }
+            )
             if error.status_code >= 500:  # Close connection for server errors
                 await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
     except Exception as e:

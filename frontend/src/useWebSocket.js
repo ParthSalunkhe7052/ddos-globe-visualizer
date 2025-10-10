@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
  */
 export default function useWebSocket(
   wsUrl = "/ws",
-  options = { autoConnect: true }
+  options = { autoConnect: true },
 ) {
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
@@ -55,7 +55,11 @@ export default function useWebSocket(
       };
 
       ws.onclose = (evt) => {
-        console.warn("[useWebSocket] closed", evt && evt.code, evt && evt.reason);
+        console.warn(
+          "[useWebSocket] closed",
+          evt && evt.code,
+          evt && evt.reason,
+        );
         setIsConnected(false);
         wsRef.current = null;
         // attempt reconnect only if we are not paused
@@ -69,7 +73,11 @@ export default function useWebSocket(
 
       ws.onerror = (err) => {
         console.error("[useWebSocket] error", err);
-        try { ws.close(); } catch (e) { /* ignore */ }
+        try {
+          ws.close();
+        } catch (e) {
+          /* ignore */
+        }
       };
     } catch (e) {
       console.error("[useWebSocket] failed to create websocket", e);
@@ -82,7 +90,11 @@ export default function useWebSocket(
       reconnectRef.current = null;
     }
     if (wsRef.current) {
-      try { wsRef.current.close(); } catch (e) { /* ignore */ }
+      try {
+        wsRef.current.close();
+      } catch (e) {
+        /* ignore */
+      }
       wsRef.current = null;
     }
     setIsConnected(false);
@@ -120,5 +132,14 @@ export default function useWebSocket(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connect, disconnect, options?.autoConnect]);
 
-  return { events, sendMessage, isConnected, isPaused, pause, resume, connect, disconnect };
+  return {
+    events,
+    sendMessage,
+    isConnected,
+    isPaused,
+    pause,
+    resume,
+    connect,
+    disconnect,
+  };
 }

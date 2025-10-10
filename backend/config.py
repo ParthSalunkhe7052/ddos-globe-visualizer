@@ -1,7 +1,9 @@
 """
 Configuration settings for DDoS Globe Visualizer
 """
+
 import os
+
 from dotenv import load_dotenv
 
 # Load environment variables

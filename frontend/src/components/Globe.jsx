@@ -1,18 +1,24 @@
-import React, { useRef, useEffect, useState, useMemo, useCallback } from "react";
+import React, {
+  useRef,
+  useEffect,
+  useState,
+  useMemo,
+  useCallback,
+} from "react";
 import Globe from "react-globe.gl";
-import { useTheme } from '../contexts/ThemeContext';
+import { useTheme } from "../contexts/ThemeContext";
 
 // Better texture URLs with fallbacks
 const GLOBE_TEXTURES = {
   dark: [
     "https://unpkg.com/three-globe/example/img/earth-night.jpg",
     "https://unpkg.com/three-globe/example/img/earth-dark.jpg",
-    "https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
+    "https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg",
   ],
   light: [
     "https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg",
-    "https://unpkg.com/three-globe/example/img/earth-day.jpg"
-  ]
+    "https://unpkg.com/three-globe/example/img/earth-day.jpg",
+  ],
 };
 
 // Fallback texture (1x1 pixel)
@@ -76,7 +82,9 @@ export default function GlobeComponent({
   const processedPoints = useMemo(() => {
     try {
       if (enableClustering) {
-        console.warn("Clustering enabled, but clusterPoints not implemented yet");
+        console.warn(
+          "Clustering enabled, but clusterPoints not implemented yet",
+        );
         // return clusterPoints(points);
       }
       return points;
@@ -132,9 +140,11 @@ export default function GlobeComponent({
   }
 
   // Globe background must always be black regardless of theme
-  const backgroundColor = '#000000';
-  const arcColor = theme === 'dark' ? 'rgba(6,182,212,0.8)' : 'rgba(37,99,235,0.8)';
-  const ringColor = theme === 'dark' ? 'rgba(6,182,212,0.6)' : 'rgba(37,99,235,0.6)';
+  const backgroundColor = "#000000";
+  const arcColor =
+    theme === "dark" ? "rgba(6,182,212,0.8)" : "rgba(37,99,235,0.8)";
+  const ringColor =
+    theme === "dark" ? "rgba(6,182,212,0.6)" : "rgba(37,99,235,0.6)";
 
   return (
     <div
@@ -144,7 +154,7 @@ export default function GlobeComponent({
         height: "100%",
         position: "relative",
         background: backgroundColor,
-        transition: 'background-color 0.3s ease'
+        transition: "background-color 0.3s ease",
       }}
     >
       <Globe
@@ -154,7 +164,9 @@ export default function GlobeComponent({
         pointsData={processedPoints}
         pointLat={(d) => d.lat}
         pointLng={(d) => d.lng}
-        pointColor={(d) => d.color || (theme === 'dark' ? "#FFD700" : "#0066cc")}
+        pointColor={(d) =>
+          d.color || (theme === "dark" ? "#FFD700" : "#0066cc")
+        }
         pointRadius={(d) => (d.isCluster ? 2 : 0.5)}
         pointAltitude={0.01}
         arcsData={arcs}
@@ -169,7 +181,7 @@ export default function GlobeComponent({
         ringsData={rings}
         ringLat={(d) => d.lat}
         ringLng={(d) => d.lng}
-        ringColor={() => (t) => ringColor.replace('0.6', (1 - t).toFixed(2))}
+        ringColor={() => (t) => ringColor.replace("0.6", (1 - t).toFixed(2))}
         ringMaxRadius={2}
         ringPropagationSpeed={3}
         ringRepeatPeriod={1000}

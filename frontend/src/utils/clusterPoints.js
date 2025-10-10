@@ -9,7 +9,12 @@
  * @param {number} clusterZoomThreshold - Altitude below which clustering is disabled
  * @returns {Array} Clustered points (with .isCluster, .count, .members)
  */
-export function clusterPoints(points, minClusterSize = 4, zoomLevel = 2, clusterZoomThreshold = 1.1) {
+export function clusterPoints(
+  points,
+  minClusterSize = 4,
+  zoomLevel = 2,
+  clusterZoomThreshold = 1.1,
+) {
   if (zoomLevel < clusterZoomThreshold) return points; // Show all points when zoomed in
   const grid = new Map();
   for (const pt of points) {
@@ -33,7 +38,8 @@ export function clusterPoints(points, minClusterSize = 4, zoomLevel = 2, cluster
         count: pts.length,
         members: pts,
         // Use highest severity color in cluster
-        color: pts.reduce((max, p) => (p.score > max.score ? p : max), pts[0]).color,
+        color: pts.reduce((max, p) => (p.score > max.score ? p : max), pts[0])
+          .color,
       });
     } else {
       clustered.push(...pts);

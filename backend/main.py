@@ -22,7 +22,7 @@ from error_handler import (APIError, InvalidIPError, RateLimitError,
                            setup_error_handlers)
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from geo_service import ip_to_location
@@ -31,6 +31,7 @@ from ip_cache import get_cached, set_cache
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 # Custom log handler for WebSocket streaming
 class WebSocketLogHandler(logging.Handler):
@@ -45,17 +46,18 @@ class WebSocketLogHandler(logging.Handler):
                     "type": "log",
                     "level": record.levelname.lower(),
                     "message": self.format(record),
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
                 }
                 # Send to all connected log WebSocket clients
                 asyncio.create_task(self.manager.broadcast_log(log_entry))
         except Exception:
             pass  # Don't let logging errors break the application
 
+
 # Add WebSocket log handler
 ws_log_handler = WebSocketLogHandler(None)  # Will be set after manager is created
 ws_log_handler.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 ws_log_handler.setFormatter(formatter)
 logger.addHandler(ws_log_handler)
 
@@ -173,7 +175,8 @@ def log_and_respond(
     return JSONResponse(
         content=resp,
         status_code=status_code,
-        headers=headers or {
+        headers=headers
+        or {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Credentials": "true",
         },
@@ -256,7 +259,7 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
     cached = EnrichCache.get(ip)
     if cached and cached["expires"] > now:
         return cached["data"]
-    
+
     geo = {}
     try:
         async with httpx.AsyncClient() as client:
@@ -276,7 +279,7 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
                     }
     except Exception as e:
         logger.warning(f"Geo enrichment failed for {ip}: {e}")
-    
+
     domain = None
     try:
         import socket
@@ -288,7 +291,7 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
         )
     except Exception:
         domain = None
-    
+
     abuse = None
     if (
         use_abuseipdb
@@ -317,7 +320,7 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
                     }
         except Exception as e:
             logger.warning(f"AbuseIPDB enrich failed for {ip}: {e}")
-    
+
     result = {"ip": ip, **geo, "domain": domain, "abuse": abuse}
     EnrichCache[ip] = {"data": result, "expires": now + timedelta(hours=24)}
     return result
@@ -569,14 +572,14 @@ async def admin_status():
             "log_connections": len(manager.log_connections),
             "total_attacks": len(DShieldCache["attacks"]),
         }
-        
+
         # Test DShield connectivity
         try:
             events = await fetch_dshield_events(max_retries=1, base_delay=0.5)
             health_data["dshield_status"] = "online" if events else "offline"
         except Exception:
             health_data["dshield_status"] = "offline"
-        
+
         # Test AbuseIPDB connectivity
         try:
             if ABUSEIPDB_KEY:
@@ -587,28 +590,29 @@ async def admin_status():
                         params={"ipAddress": "8.8.8.8", "maxAgeInDays": 90},
                         timeout=5,
                     )
-                    health_data["abuseipdb_status"] = "online" if resp.status_code == 200 else "offline"
+                    health_data["abuseipdb_status"] = (
+                        "online" if resp.status_code == 200 else "offline"
+                    )
             else:
                 health_data["abuseipdb_status"] = "not_configured"
         except Exception:
             health_data["abuseipdb_status"] = "offline"
-        
+
         # Test GeoIP service
         try:
             geo_result = ip_to_location("8.8.8.8")
-            health_data["geoip_status"] = "online" if not geo_result.get("error") else "offline"
+            health_data["geoip_status"] = (
+                "online" if not geo_result.get("error") else "offline"
+            )
         except Exception:
             health_data["geoip_status"] = "offline"
-        
+
         return log_and_respond(True, data=health_data)
-        
+
     except Exception as e:
         logger.error(f"Admin status error: {e}")
         return log_and_respond(
-            False,
-            error="ADMIN_STATUS_ERROR",
-            message=str(e),
-            status_code=500
+            False, error="ADMIN_STATUS_ERROR", message=str(e), status_code=500
         )
 
 
@@ -618,19 +622,20 @@ async def admin_clear_cache():
     try:
         # Clear enrichment cache
         EnrichCache.clear()
-        
+
         # Clear DShield cache
         DShieldCache["attacks"] = []
         DShieldCache["last_fetch"] = None
-        
+
         # Clear live cache
         with LIVE_CACHE["lock"]:
             LIVE_CACHE["data"] = []
             LIVE_CACHE["timestamp"] = time.time()
-        
+
         # Clear IP cache database
         try:
             import sqlite3
+
             conn = sqlite3.connect("ip_cache.db")
             cursor = conn.cursor()
             cursor.execute("DELETE FROM ip_cache")
@@ -638,17 +643,16 @@ async def admin_clear_cache():
             conn.close()
         except Exception as e:
             logger.warning(f"Failed to clear IP cache database: {e}")
-        
+
         logger.info("All caches cleared by admin")
-        return log_and_respond(True, data={"message": "All caches cleared successfully"})
-        
+        return log_and_respond(
+            True, data={"message": "All caches cleared successfully"}
+        )
+
     except Exception as e:
         logger.error(f"Cache clear error: {e}")
         return log_and_respond(
-            False,
-            error="CACHE_CLEAR_ERROR",
-            message=str(e),
-            status_code=500
+            False, error="CACHE_CLEAR_ERROR", message=str(e), status_code=500
         )
 
 
@@ -657,52 +661,51 @@ async def admin_refresh_dshield():
     """Manually refresh DShield data."""
     try:
         logger.info("Manual DShield refresh requested by admin")
-        
+
         # Force refresh DShield data
         raw = await fetch_dshield_top_ips()
         enriched = []
         now = datetime.utcnow()
-        
+
         for entry in raw:
             ip = entry.get("ip")
             attackCount = entry.get("attackCount", 0)
             meta = await enrich_ip(ip, use_abuseipdb=False)
-            enriched.append({
-                "ip": ip,
-                "attackCount": attackCount,
-                "source": "dshield",
-                "lat": meta.get("lat"),
-                "lon": meta.get("lon"),
-                "countryCode": meta.get("countryCode"),
-                "countryName": meta.get("countryName"),
-                "isp": meta.get("isp"),
-                "domain": meta.get("domain"),
-                "firstSeen": now.isoformat() + "Z",
-                "lastSeen": now.isoformat() + "Z",
-                "cached_from": "dshield_xml",
-                "cluster_id": None,
-            })
-        
+            enriched.append(
+                {
+                    "ip": ip,
+                    "attackCount": attackCount,
+                    "source": "dshield",
+                    "lat": meta.get("lat"),
+                    "lon": meta.get("lon"),
+                    "countryCode": meta.get("countryCode"),
+                    "countryName": meta.get("countryName"),
+                    "isp": meta.get("isp"),
+                    "domain": meta.get("domain"),
+                    "firstSeen": now.isoformat() + "Z",
+                    "lastSeen": now.isoformat() + "Z",
+                    "cached_from": "dshield_xml",
+                    "cluster_id": None,
+                }
+            )
+
         DShieldCache["attacks"] = enriched
         DShieldCache["last_fetch"] = now
-        
+
         logger.info(f"DShield refresh complete: {len(enriched)} attacks")
         return log_and_respond(
             True,
             data={
                 "message": f"DShield data refreshed successfully",
                 "attack_count": len(enriched),
-                "timestamp": now.isoformat() + "Z"
-            }
+                "timestamp": now.isoformat() + "Z",
+            },
         )
-        
+
     except Exception as e:
         logger.error(f"DShield refresh error: {e}")
         return log_and_respond(
-            False,
-            error="DSHIELD_REFRESH_ERROR",
-            message=str(e),
-            status_code=500
+            False, error="DSHIELD_REFRESH_ERROR", message=str(e), status_code=500
         )
 
 
@@ -718,7 +721,7 @@ async def health_abuseipdb():
                     "last_check": datetime.utcnow().isoformat() + "Z",
                 }
             )
-        
+
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 "https://api.abuseipdb.com/api/v2/check",
@@ -726,7 +729,7 @@ async def health_abuseipdb():
                 params={"ipAddress": "8.8.8.8", "maxAgeInDays": 90},
                 timeout=10,
             )
-            
+
             if resp.status_code == 200:
                 return JSONResponse(
                     content={
@@ -752,7 +755,7 @@ async def health_abuseipdb():
                     },
                     status_code=503,
                 )
-                
+
     except Exception as e:
         return JSONResponse(
             content={
@@ -784,7 +787,7 @@ async def set_feed_mode(mode: str = Query(..., pattern="^(live|fallback)$")):
 async def analyze_ip_endpoint(ip: str = Query(...)):
     """Analyze an IP address and return comprehensive data."""
     logger.info(f"/analyze_ip requested for IP: {ip}")
-    
+
     try:
         ipaddress.ip_address(ip)
     except ValueError:
@@ -867,6 +870,7 @@ async def cluster_expand(
                 },
             }
         elif lat is not None and lon is not None:
+
             def haversine(lat1, lon1, lat2, lon2):
                 from math import atan2, cos, radians, sin, sqrt
 
@@ -921,6 +925,7 @@ async def live_feed_endpoint(enabled: bool = True, lighten: bool = False):
             raise Exception("DShield fetch failed")
         clustered = cluster_attacks(attacks)
         if lighten:
+
             def simplify(attack):
                 return {
                     "ip": attack["ip"],
@@ -1105,7 +1110,9 @@ async def ws_dshield_attacks(websocket: WebSocket):
         try:
             # Check WebSocket state before sending
             if websocket.client_state != websocket.client_state.CONNECTED:
-                logger.info(f"WebSocket disconnected, cannot send status message: '{message}'")
+                logger.info(
+                    f"WebSocket disconnected, cannot send status message: '{message}'"
+                )
                 return False
             logger.info(f"Sending status message: '{message}'")
             await websocket.send_json(
@@ -1145,24 +1152,34 @@ async def ws_dshield_attacks(websocket: WebSocket):
 
             try:
                 logger.info(f"=== DShield fetch attempt {attempts + 1} ===")
-                logger.info(f"Calling fetch_dshield_events with max_retries=1, base_delay=1.0")
+                logger.info(
+                    f"Calling fetch_dshield_events with max_retries=1, base_delay=1.0"
+                )
                 events = await fetch_dshield_events(max_retries=1, base_delay=1.0)
-                logger.info(f"DShield fetch returned {len(events) if events else 0} events")
+                logger.info(
+                    f"DShield fetch returned {len(events) if events else 0} events"
+                )
                 if events:
-                    logger.info(f"First event sample: {events[0] if events else 'None'}")
+                    logger.info(
+                        f"First event sample: {events[0] if events else 'None'}"
+                    )
                 else:
                     logger.warning("DShield fetch returned empty events list")
 
                 if not events:
                     attempts += 1
-                    logger.warning(f"DShield returned no events (attempt {attempts}/{fallback_after})")
+                    logger.warning(
+                        f"DShield returned no events (attempt {attempts}/{fallback_after})"
+                    )
                     if not await send_status("DShield feed offline"):
                         logger.info(
                             "WebSocket disconnected while sending offline status, stopping"
                         )
                         break
                     if attempts >= fallback_after:
-                        logger.info("=== Switching to fallback after failed attempts ===")
+                        logger.info(
+                            "=== Switching to fallback after failed attempts ==="
+                        )
                         if not await send_status("Switching to fallback/mock stream"):
                             logger.info(
                                 "WebSocket disconnected while switching to fallback, stopping"
@@ -1186,7 +1203,9 @@ async def ws_dshield_attacks(websocket: WebSocket):
                         sent_events.add(event_id)
                         new_events.append(event)
 
-                logger.info(f"Found {len(new_events)} new events to send (total events: {len(events)}, already sent: {len(sent_events)})")
+                logger.info(
+                    f"Found {len(new_events)} new events to send (total events: {len(events)}, already sent: {len(sent_events)})"
+                )
 
                 for i, event in enumerate(new_events):
                     # Check WebSocket state before each send
@@ -1196,7 +1215,9 @@ async def ws_dshield_attacks(websocket: WebSocket):
                         )
                         return
                     try:
-                        logger.debug(f"Sending event {i+1}/{len(new_events)}: {event.get('id', 'unknown')}")
+                        logger.debug(
+                            f"Sending event {i+1}/{len(new_events)}: {event.get('id', 'unknown')}"
+                        )
                         await websocket.send_json({"type": "attack", "data": event})
                         logger.debug(f"Event {i+1}/{len(new_events)} sent successfully")
                     except Exception as send_error:
@@ -1276,15 +1297,17 @@ async def websocket_logs(websocket: WebSocket):
     try:
         await manager.connect_log(websocket)
         logger.info("Log WebSocket client connected")
-        
+
         # Send initial connection message
-        await websocket.send_json({
-            "type": "log",
-            "level": "info",
-            "message": "Connected to log stream",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
-        })
-        
+        await websocket.send_json(
+            {
+                "type": "log",
+                "level": "info",
+                "message": "Connected to log stream",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+
         # Keep connection alive
         while True:
             try:
@@ -1294,7 +1317,7 @@ async def websocket_logs(websocket: WebSocket):
                     await websocket.send_text("pong")
             except WebSocketDisconnect:
                 break
-                
+
     except WebSocketDisconnect:
         logger.info("Log WebSocket client disconnected")
     except Exception as e:
@@ -1330,48 +1353,60 @@ async def debug_dshield_fetch():
     """Debug endpoint to test DShield fetch with detailed response info."""
     try:
         logger.info("=== DShield Debug Fetch Starting ===")
-        
+
         # Test direct HTTP fetch
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get("https://isc.sans.edu/api/topips/")
             logger.info(f"DShield raw status: {resp.status_code}")
-            logger.info(f"DShield content-type: {resp.headers.get('content-type', 'unknown')}")
+            logger.info(
+                f"DShield content-type: {resp.headers.get('content-type', 'unknown')}"
+            )
             logger.info(f"DShield response length: {len(resp.text)}")
             logger.info(f"DShield response preview: {resp.text[:200]}")
-            
+
             # Test XML parsing
-            if resp.text.strip().startswith("<?xml") or resp.text.strip().startswith("<"):
+            if resp.text.strip().startswith("<?xml") or resp.text.strip().startswith(
+                "<"
+            ):
                 logger.info("DShield returned XML, testing xmltodict parsing")
                 try:
                     xml_data = xmltodict.parse(resp.text)
-                    logger.info(f"XML parsing successful, structure: {list(xml_data.keys())}")
-                    
+                    logger.info(
+                        f"XML parsing successful, structure: {list(xml_data.keys())}"
+                    )
+
                     entries = []
                     if "topips" in xml_data and "ipaddress" in xml_data["topips"]:
                         ip_list = xml_data["topips"]["ipaddress"]
                         if not isinstance(ip_list, list):
                             ip_list = [ip_list]
-                        
+
                         for ip_elem in ip_list:
                             try:
                                 rank = int(ip_elem.get("rank", 0))
                                 ip = ip_elem.get("source", "")
                                 reports = int(ip_elem.get("reports", 0))
                                 targets = int(ip_elem.get("targets", 0))
-                                
+
                                 if ip:
-                                    entries.append({
-                                        "rank": rank,
-                                        "ip": ip,
-                                        "reports": reports,
-                                        "targets": targets,
-                                    })
+                                    entries.append(
+                                        {
+                                            "rank": rank,
+                                            "ip": ip,
+                                            "reports": reports,
+                                            "targets": targets,
+                                        }
+                                    )
                             except (ValueError, TypeError) as e:
-                                logger.warning(f"Failed to parse IP entry: {ip_elem}, error: {e}")
+                                logger.warning(
+                                    f"Failed to parse IP entry: {ip_elem}, error: {e}"
+                                )
                                 continue
-                    
-                    logger.info(f"DShield XML parsed successfully: {len(entries)} entries")
-                    
+
+                    logger.info(
+                        f"DShield XML parsed successfully: {len(entries)} entries"
+                    )
+
                     return {
                         "status": "success",
                         "http_status": resp.status_code,
@@ -1383,7 +1418,7 @@ async def debug_dshield_fetch():
                         "sample_entries": entries[:5],  # First 5 entries
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                     }
-                    
+
                 except Exception as xml_err:
                     logger.error(f"XML parsing failed: {xml_err}")
                     return {
@@ -1407,7 +1442,7 @@ async def debug_dshield_fetch():
                     "xml_parsing": "not_applicable",
                     "timestamp": datetime.utcnow().isoformat() + "Z",
                 }
-                
+
     except Exception as e:
         logger.error(f"DShield debug fetch failed: {e}")
         return {

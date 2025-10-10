@@ -12,7 +12,7 @@ import { createPortal } from "react-dom";
 export function showToast(message, type = "info", duration = 2200) {
   // Dispatch a custom event so any mounted ToastProvider can show it
   window.dispatchEvent(
-    new CustomEvent("app:toast", { detail: { message, type, duration } })
+    new CustomEvent("app:toast", { detail: { message, type, duration } }),
   );
 }
 
@@ -68,7 +68,11 @@ function ToastItem({ id, message, type, onDone, duration }) {
           height: 8,
           borderRadius: 999,
           background:
-            type === "success" ? "#22c55e" : type === "error" ? "#ef4444" : "#3b82f6",
+            type === "success"
+              ? "#22c55e"
+              : type === "error"
+                ? "#ef4444"
+                : "#3b82f6",
           boxShadow: "0 0 0 3px rgba(0,0,0,0.06)",
         }}
       />
@@ -122,11 +126,13 @@ export default function ToastProvider() {
         <div key={t.id} style={{ pointerEvents: "auto" }}>
           <ToastItem
             {...t}
-            onDone={(id) => setToasts((prev) => prev.filter((x) => x.id !== id))}
+            onDone={(id) =>
+              setToasts((prev) => prev.filter((x) => x.id !== id))
+            }
           />
         </div>
       ))}
     </div>,
-    document.body
+    document.body,
   );
 }

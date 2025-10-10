@@ -22,7 +22,7 @@
   height: 40px;
   border: 3px solid rgba(255, 215, 0, 0.3);
   border-radius: 50%;
-  border-top-color: #FFD700;
+  border-top-color: #ffd700;
   animation: spin 1s linear infinite;
 }
 
@@ -63,18 +63,18 @@ body.light-theme {
 
 .left-features .globe-theme-select {
   background: #181818;
-  color: #FFD700;
-  border: 1.5px solid #FFD700;
+  color: #ffd700;
+  border: 1.5px solid #ffd700;
   border-radius: 7px;
   padding: 4px 12px;
   font-size: 1em;
   margin-top: 2px;
-  box-shadow: 0 1px 6px rgba(0,0,0,0.18);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
   outline: none;
 }
 
 .left-features label {
-  color: #FFD700;
+  color: #ffd700;
   font-size: 13px;
   margin-bottom: 2px;
 }
@@ -122,7 +122,7 @@ body.light-theme {
   background: rgba(30, 30, 30, 0.92);
   border-radius: 12px;
   padding: 14px 18px 12px 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
   z-index: 12;
   font-size: 1rem;
   color: #fffbe7;
@@ -133,7 +133,10 @@ body.light-theme {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  transition: right 0.2s, opacity 0.2s, box-shadow 0.2s;
+  transition:
+    right 0.2s,
+    opacity 0.2s,
+    box-shadow 0.2s;
 }
 
 .side-info-panel .side-chevron {
@@ -177,7 +180,7 @@ body.light-theme {
   max-width: 98vw;
   min-width: 0;
   font-size: 1.08rem;
-  box-shadow: 0 1px 6px rgba(0,0,0,0.13);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.13);
 }
 
 @media (max-width: 700px) {
@@ -189,7 +192,7 @@ body.light-theme {
     max-width: 98vw;
     min-width: 0;
     font-size: 1.08rem;
-    box-shadow: 0 1px 6px rgba(0,0,0,0.13);
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.13);
   }
 }
 /* === Severity Color Legend === */
@@ -200,12 +203,14 @@ body.light-theme {
   background: rgba(30, 30, 30, 0.82);
   border-radius: 12px;
   padding: 12px 18px 10px 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
   z-index: 10;
   font-size: 0.98rem;
   color: #fffbe7;
   opacity: 0.92;
-  transition: opacity 0.2s, box-shadow 0.2s;
+  transition:
+    opacity 0.2s,
+    box-shadow 0.2s;
   min-width: 120px;
   max-width: 180px;
   pointer-events: auto;
@@ -232,9 +237,9 @@ body.light-theme {
   height: 16px;
   border-radius: 50%;
   display: inline-block;
-  border: 2px solid #FFD700;
+  border: 2px solid #ffd700;
   margin-right: 2px;
-  box-shadow: 0 0 4px rgba(255,215,0,0.18);
+  box-shadow: 0 0 4px rgba(255, 215, 0, 0.18);
 }
 
 .legend-label {
@@ -287,12 +292,14 @@ body.light-theme {
   }
 }
 /* === Global styles === */
-body, html, #root {
+body,
+html,
+#root {
   margin: 0;
   padding: 0;
   height: 100%;
   background-color: #121212; /* dark background */
-  font-family: 'Segoe UI', sans-serif;
+  font-family: "Segoe UI", sans-serif;
   color: #f1f1f1;
 }
 
@@ -312,7 +319,7 @@ body, html, #root {
 .app-header {
   font-size: 2rem;
   font-weight: bold;
-  color: #FFD700; /* yellow pop */
+  color: #ffd700; /* yellow pop */
   margin-top: 10px;
   text-align: center;
   text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
@@ -349,12 +356,15 @@ body, html, #root {
   padding: 10px 16px;
   border-radius: 25px;
   border: none;
-  background-color: #FFD700;
+  background-color: #ffd700;
   color: #121212;
   font-size: 0.95rem;
   cursor: pointer;
   font-weight: 600;
-  transition: background-color 0.25s ease, transform 0.2s ease, box-shadow 0.25s ease;
+  transition:
+    background-color 0.25s ease,
+    transform 0.2s ease,
+    box-shadow 0.25s ease;
 }
 .ip-button:hover {
   background-color: #e6c200;
@@ -369,7 +379,7 @@ body, html, #root {
 
 /* Rotate speed slider */
 .input-container input[type="range"] {
-  accent-color: #FFD700;
+  accent-color: #ffd700;
   height: 4px;
   cursor: pointer;
 }
@@ -386,7 +396,7 @@ body, html, #root {
 
 /* Tooltip for points (browser default but style if needed) */
 .globe-wrapper .globeTooltip {
-  background: rgba(30,30,30,0.85);
+  background: rgba(30, 30, 30, 0.85);
   color: #f1f1f1;
   padding: 4px 8px;
   border-radius: 4px;
@@ -401,9 +411,18 @@ body, html, #root {
   animation: pulse 1.5s infinite;
 }
 @keyframes pulse {
-  0% { r: 3; opacity: 1; }
-  50% { r: 6; opacity: 0.5; }
-  100% { r: 3; opacity: 1; }
+  0% {
+    r: 3;
+    opacity: 1;
+  }
+  50% {
+    r: 6;
+    opacity: 0.5;
+  }
+  100% {
+    r: 3;
+    opacity: 1;
+  }
 }
 
 /* Optional subtle fade-in on load */
@@ -411,8 +430,12 @@ body, html, #root {
   animation: fadein 0.8s ease-out;
 }
 @keyframes fadein {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 /* === Severity Color Legend === */
@@ -423,12 +446,14 @@ body, html, #root {
   background: rgba(30, 30, 30, 0.82);
   border-radius: 12px;
   padding: 12px 18px 10px 14px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
   z-index: 10;
   font-size: 0.98rem;
   color: #fffbe7;
   opacity: 0.92;
-  transition: opacity 0.2s, box-shadow 0.2s;
+  transition:
+    opacity 0.2s,
+    box-shadow 0.2s;
   min-width: 120px;
   max-width: 180px;
   pointer-events: auto;
@@ -455,9 +480,9 @@ body, html, #root {
   height: 16px;
   border-radius: 50%;
   display: inline-block;
-  border: 2px solid #FFD700;
+  border: 2px solid #ffd700;
   margin-right: 2px;
-  box-shadow: 0 0 4px rgba(255,215,0,0.18);
+  box-shadow: 0 0 4px rgba(255, 215, 0, 0.18);
 }
 
 .legend-label {
