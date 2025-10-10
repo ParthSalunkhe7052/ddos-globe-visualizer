@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DDoS Globe Admin Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body class="bg-gray-900 text-gray-100">
+    <div x-data="adminDashboard()" x-init="init()" class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <h1 class="text-2xl font-bold text-white">DDoS Globe Admin</h1>
+                    <span class="px-3 py-1 rounded-full text-sm font-medium" 
+                          :class="wsConnected ? 'bg-green-900 text-green-200' : 'bg-red-900 text-red-200'">
+                        <span class="connection-indicator" :class="wsConnected ? 'connected' : 'disconnected'"></span>
+                        <span x-text="wsConnected ? 'Connected' : 'Disconnected'"></span>
+                    </span>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div class="text-sm text-gray-400">
+                        <span>Connections: </span>
+                        <span class="text-white font-semibold" x-text="activeConnections"></span>
+                    </div>
+                    <div class="text-sm text-gray-400">
+                        <span>Attacks: </span>
+                        <span class="text-white font-semibold" x-text="totalAttacks"></span>
+                    </div>
+                    <div class="text-sm text-gray-400">
+                        <span>Updated: </span>
+                        <span class="text-white font-semibold" x-text="lastUpdate"></span>
+                    </div>
+                    <button @click="toggleTheme()" class="p-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition">
+                        <svg x-show="!isDark" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>
+                        </svg>
+                        <svg x-show="isDark" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <div class="bg-gray-800 border-b border-gray-700">
+            <nav class="flex px-6 space-x-8">
+                <button @click="activeTab = 'feed'" 
+                        :class="activeTab === 'feed' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm transition">
+                    Live Feed
+                </button>
+                <button @click="activeTab = 'logs'" 
+                        :class="activeTab === 'logs' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm transition">
+                    System Logs
+                </button>
+                <button @click="activeTab = 'status'" 
+                        :class="activeTab === 'status' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm transition">
+                    System Status
+                </button>
+                <button @click="activeTab = 'controls'" 
+                        :class="activeTab === 'controls' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-gray-300'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm transition">
+                    Controls
+                </button>
+            </nav>
+        </div>
+
+        <!-- Main Content -->
+        <main class="p-6">
+            <!-- Live Feed Tab -->
+            <div x-show="activeTab === 'feed'" class="space-y-4">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold">Attack Feed</h2>
+                    <div class="text-sm text-gray-400">
+                        Showing latest attacks (max 100)
+                    </div>
+                </div>
+                <div class="space-y-3 max-h-[calc(100vh-300px)] overflow-y-auto" x-html="attackFeedHtml">
+                    <!-- Attack items will be inserted here -->
+                </div>
+                <div x-show="attackFeed.length === 0" class="text-center py-12 text-gray-400">
+                    No attacks detected yet. Waiting for live feed...
+                </div>
+            </div>
+
+            <!-- System Logs Tab -->
+            <div x-show="activeTab === 'logs'" class="space-y-4">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold">System Logs</h2>
+                    <div class="flex space-x-2">
+                        <button @click="toggleLogPause()" 
+                                class="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition text-sm">
+                            <span x-text="logPaused ? 'Resume' : 'Pause'"></span>
+                        </button>
+                        <button @click="clearLogs()" 
+                                class="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 transition text-sm">
+                            Clear Logs
+                        </button>
+                        <button @click="exportLogs()" 
+                                class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 transition text-sm">
+                            Export Logs
+                        </button>
+                        <button @click="reconnectLogs()" 
+                                class="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 transition text-sm">
+                            Reconnect
+                        </button>
+                    </div>
+                </div>
+                <div id="log-container" 
+                     class="bg-gray-800 rounded-lg p-4 font-mono text-xs max-h-[calc(100vh-300px)] overflow-y-auto"
+                     x-html="logsHtml">
+                    <!-- Log entries will be inserted here -->
+                </div>
+                <div x-show="logs.length === 0" class="text-center py-12 text-gray-400">
+                    No logs yet. Connect to log stream...
+                </div>
+            </div>
+
+            <!-- System Status Tab -->
+            <div x-show="activeTab === 'status'" class="space-y-6">
+                <h2 class="text-xl font-semibold mb-4">System Status</h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Service Status -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <h3 class="text-lg font-semibold mb-4">Service Health</h3>
+                        <div class="space-y-3">
+                            <div class="flex justify-between items-center">
+                                <span>DShield Feed</span>
+                                <span class="status-badge" :class="dshieldStatus === 'online' ? 'online' : 'offline'">
+                                    <span x-text="dshieldStatus"></span>
+                                </span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span>AbuseIPDB API</span>
+                                <span class="status-badge" :class="abuseipdbStatus === 'online' ? 'online' : (abuseipdbStatus === 'not_configured' ? 'warning' : 'offline')">
+                                    <span x-text="abuseipdbStatus"></span>
+                                </span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span>GeoIP Service</span>
+                                <span class="status-badge" :class="geoipStatus === 'online' ? 'online' : 'offline'">
+                                    <span x-text="geoipStatus"></span>
+                                </span>
+                            </div>
+                        </div>
+                        <button @click="testConnection()" class="mt-4 w-full btn-primary">
+                            Test Connections
+                        </button>
+                    </div>
+
+                    <!-- System Metrics -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <h3 class="text-lg font-semibold mb-4">System Metrics</h3>
+                        <div class="space-y-3">
+                            <div class="flex justify-between items-center">
+                                <span>Active WebSocket Connections</span>
+                                <span class="text-white font-semibold" x-text="activeConnections"></span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span>Total Attacks Tracked</span>
+                                <span class="text-white font-semibold" x-text="totalAttacks"></span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span>Feed Mode</span>
+                                <span class="text-white font-semibold uppercase" x-text="feedMode"></span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span>Last Update</span>
+                                <span class="text-white font-semibold" x-text="lastUpdate"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controls Tab -->
+            <div x-show="activeTab === 'controls'" class="space-y-6">
+                <h2 class="text-xl font-semibold mb-4">System Controls</h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Feed Mode Control -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <h3 class="text-lg font-semibold mb-4">Feed Mode</h3>
+                        <p class="text-sm text-gray-400 mb-4">
+                            Switch between live DShield feed and fallback/mock mode
+                        </p>
+                        <div class="space-y-2">
+                            <button @click="setFeedMode('live')" 
+                                    :class="feedMode === 'live' ? 'bg-blue-600' : 'bg-gray-700'"
+                                    class="w-full px-4 py-2 rounded-lg hover:opacity-80 transition">
+                                Live Mode (Real DShield Data)
+                            </button>
+                            <button @click="setFeedMode('fallback')" 
+                                    :class="feedMode === 'fallback' ? 'bg-blue-600' : 'bg-gray-700'"
+                                    class="w-full px-4 py-2 rounded-lg hover:opacity-80 transition">
+                                Fallback Mode (Mock Data)
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Cache Management -->
+                    <div class="bg-gray-800 rounded-lg p-6">
+                        <h3 class="text-lg font-semibold mb-4">Cache Management</h3>
+                        <p class="text-sm text-gray-400 mb-4">
+                            Clear cached IP data and force refresh
+                        </p>
+                        <div class="space-y-2">
+                            <button @click="clearCache()" class="w-full btn-danger">
+                                Clear IP Cache
+                            </button>
+                            <button @click="refreshDShield()" class="w-full btn-success">
+                                Refresh DShield Data
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Notifications -->
+        <div class="fixed top-4 right-4 z-50 space-y-2 max-w-sm">
+            <template x-for="notification in notifications" :key="notification.id">
+                <div class="bg-gray-800 border-l-4 rounded-lg shadow-lg p-4 fade-in"
+                     :class="{
+                         'border-green-500': notification.type === 'success',
+                         'border-blue-500': notification.type === 'info',
+                         'border-yellow-500': notification.type === 'warning',
+                         'border-red-500': notification.type === 'error'
+                     }">
+                    <div class="flex items-start justify-between">
+                        <div class="flex-1">
+                            <h4 class="font-semibold text-white" x-text="notification.title"></h4>
+                            <p class="text-sm text-gray-300 mt-1" x-text="notification.message"></p>
+                        </div>
+                        <button @click="removeNotification(notification.id)" 
+                                class="ml-4 text-gray-400 hover:text-white transition">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <script src="/static/js/admin.js"></script>
+</body>
+</html>
+

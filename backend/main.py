@@ -550,13 +550,26 @@ def ping():
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
     """Serve the admin dashboard."""
-    return templates.TemplateResponse("admin.html", {"request": request})
+    try:
+        logger.info("Admin dashboard accessed")
+        return templates.TemplateResponse("admin.html", {"request": request})
+    except Exception as e:
+        logger.error(f"Error serving admin dashboard: {e}", exc_info=True)
+        return JSONResponse(
+            content={
+                "error": "ADMIN_DASHBOARD_ERROR",
+                "message": f"Failed to load admin dashboard: {str(e)}",
+            },
+            status_code=500,
+        )
 
 
 @app.get("/api/admin/status")
 async def admin_status():
     """Get comprehensive system status for admin dashboard."""
     try:
+        logger.info("Admin status endpoint called")
+
         # Get basic health info
         health_data = {
             "status": "ok",
@@ -577,7 +590,9 @@ async def admin_status():
         try:
             events = await fetch_dshield_events(max_retries=1, base_delay=0.5)
             health_data["dshield_status"] = "online" if events else "offline"
-        except Exception:
+            logger.info(f"DShield status: {health_data['dshield_status']}")
+        except Exception as e:
+            logger.error(f"DShield connectivity test failed: {e}")
             health_data["dshield_status"] = "offline"
 
         # Test AbuseIPDB connectivity
@@ -593,9 +608,12 @@ async def admin_status():
                     health_data["abuseipdb_status"] = (
                         "online" if resp.status_code == 200 else "offline"
                     )
+                    logger.info(f"AbuseIPDB status: {health_data['abuseipdb_status']}")
             else:
                 health_data["abuseipdb_status"] = "not_configured"
-        except Exception:
+                logger.info("AbuseIPDB not configured")
+        except Exception as e:
+            logger.error(f"AbuseIPDB connectivity test failed: {e}")
             health_data["abuseipdb_status"] = "offline"
 
         # Test GeoIP service
@@ -604,13 +622,16 @@ async def admin_status():
             health_data["geoip_status"] = (
                 "online" if not geo_result.get("error") else "offline"
             )
-        except Exception:
+            logger.info(f"GeoIP status: {health_data['geoip_status']}")
+        except Exception as e:
+            logger.error(f"GeoIP service test failed: {e}")
             health_data["geoip_status"] = "offline"
 
+        logger.info(f"Admin status returning: {health_data}")
         return log_and_respond(True, data=health_data)
 
     except Exception as e:
-        logger.error(f"Admin status error: {e}")
+        logger.error(f"Admin status error: {e}", exc_info=True)
         return log_and_respond(
             False, error="ADMIN_STATUS_ERROR", message=str(e), status_code=500
         )
@@ -620,17 +641,22 @@ async def admin_status():
 async def admin_clear_cache():
     """Clear all caches."""
     try:
+        logger.info("Admin cache clear requested")
+
         # Clear enrichment cache
         EnrichCache.clear()
+        logger.info("EnrichCache cleared")
 
         # Clear DShield cache
         DShieldCache["attacks"] = []
         DShieldCache["last_fetch"] = None
+        logger.info("DShieldCache cleared")
 
         # Clear live cache
         with LIVE_CACHE["lock"]:
             LIVE_CACHE["data"] = []
             LIVE_CACHE["timestamp"] = time.time()
+        logger.info("LIVE_CACHE cleared")
 
         # Clear IP cache database
         try:
@@ -641,16 +667,17 @@ async def admin_clear_cache():
             cursor.execute("DELETE FROM ip_cache")
             conn.commit()
             conn.close()
+            logger.info("IP cache database cleared")
         except Exception as e:
             logger.warning(f"Failed to clear IP cache database: {e}")
 
-        logger.info("All caches cleared by admin")
+        logger.info("All caches cleared successfully by admin")
         return log_and_respond(
             True, data={"message": "All caches cleared successfully"}
         )
 
     except Exception as e:
-        logger.error(f"Cache clear error: {e}")
+        logger.error(f"Cache clear error: {e}", exc_info=True)
         return log_and_respond(
             False, error="CACHE_CLEAR_ERROR", message=str(e), status_code=500
         )
@@ -664,6 +691,8 @@ async def admin_refresh_dshield():
 
         # Force refresh DShield data
         raw = await fetch_dshield_top_ips()
+        logger.info(f"Fetched {len(raw)} raw IPs from DShield")
+
         enriched = []
         now = datetime.utcnow()
 
@@ -692,7 +721,9 @@ async def admin_refresh_dshield():
         DShieldCache["attacks"] = enriched
         DShieldCache["last_fetch"] = now
 
-        logger.info(f"DShield refresh complete: {len(enriched)} attacks")
+        logger.info(
+            f"DShield refresh complete: {len(enriched)} attacks enriched and cached"
+        )
         return log_and_respond(
             True,
             data={
@@ -703,7 +734,7 @@ async def admin_refresh_dshield():
         )
 
     except Exception as e:
-        logger.error(f"DShield refresh error: {e}")
+        logger.error(f"DShield refresh error: {e}", exc_info=True)
         return log_and_respond(
             False, error="DSHIELD_REFRESH_ERROR", message=str(e), status_code=500
         )
@@ -1114,7 +1145,7 @@ async def ws_dshield_attacks(websocket: WebSocket):
                     f"WebSocket disconnected, cannot send status message: '{message}'"
                 )
                 return False
-            logger.info(f"Sending status message: '{message}'")
+            logger.info(f"📤 Sending status: '{message}'")
             await websocket.send_json(
                 {
                     "type": "status",
@@ -1122,18 +1153,27 @@ async def ws_dshield_attacks(websocket: WebSocket):
                     "timestamp": datetime.utcnow().isoformat() + "Z",
                 }
             )
-            logger.debug(f"Status message sent successfully: '{message}'")
+            logger.debug(f"✅ Status message sent successfully: '{message}'")
             return True
         except Exception as e:
-            logger.error(f"Failed to send status message '{message}': {e}")
+            logger.error(f"❌ Failed to send status message '{message}': {e}")
             return False
 
-    if USE_MOCK or MODE == "fallback":
+    # Prioritize LIVE mode - only use fallback if explicitly requested or if USE_MOCK is true
+    if USE_MOCK:
+        logger.warning("⚠️  USE_MOCK_DATA is enabled - using mock stream")
+        await send_status("Using mock stream (USE_MOCK_DATA=true)")
+        await mock_attack_stream(websocket)
+        return
+
+    if MODE == "fallback":
+        logger.warning("⚠️  FEED_MODE is 'fallback' - using mock stream")
         await send_status("Using fallback/mock stream")
         await mock_attack_stream(websocket)
         return
 
     try:
+        logger.info("🌐 Starting LIVE DShield stream mode")
         if not await send_status("Connected to DShield stream"):
             logger.info("WebSocket disconnected during initial status, stopping")
             return
@@ -1147,24 +1187,24 @@ async def ws_dshield_attacks(websocket: WebSocket):
         while True:
             # Check WebSocket state before each iteration
             if websocket.client_state != websocket.client_state.CONNECTED:
-                logger.info("WebSocket disconnected during main loop, stopping")
+                logger.info("⚠️  WebSocket disconnected during main loop, stopping")
                 break
 
             try:
-                logger.info(f"=== DShield fetch attempt {attempts + 1} ===")
+                logger.info(f"=== 🔍 DShield fetch attempt {attempts + 1} ===")
                 logger.info(
                     f"Calling fetch_dshield_events with max_retries=1, base_delay=1.0"
                 )
                 events = await fetch_dshield_events(max_retries=1, base_delay=1.0)
                 logger.info(
-                    f"DShield fetch returned {len(events) if events else 0} events"
+                    f"📊 DShield fetch returned {len(events) if events else 0} events"
                 )
                 if events:
                     logger.info(
-                        f"First event sample: {events[0] if events else 'None'}"
+                        f"📋 First event sample: {events[0] if events else 'None'}"
                     )
                 else:
-                    logger.warning("DShield fetch returned empty events list")
+                    logger.warning("⚠️  DShield fetch returned empty events list")
 
                 if not events:
                     attempts += 1
@@ -1194,7 +1234,7 @@ async def ws_dshield_attacks(websocket: WebSocket):
                 # reset backoff and attempts on success
                 backoff = 1.0
                 attempts = 0
-                logger.info("✅ Live DShield stream active")
+                logger.info("✅ Live DShield stream active - processing events")
 
                 new_events = []
                 for event in events:
@@ -1204,33 +1244,39 @@ async def ws_dshield_attacks(websocket: WebSocket):
                         new_events.append(event)
 
                 logger.info(
-                    f"Found {len(new_events)} new events to send (total events: {len(events)}, already sent: {len(sent_events)})"
+                    f"📨 Found {len(new_events)} new events to send (total: {len(events)}, cached: {len(sent_events)})"
                 )
 
                 for i, event in enumerate(new_events):
                     # Check WebSocket state before each send
                     if websocket.client_state != websocket.client_state.CONNECTED:
                         logger.info(
-                            "WebSocket disconnected while sending events, stopping"
+                            "⚠️  WebSocket disconnected while sending events, stopping"
                         )
                         return
                     try:
-                        logger.debug(
-                            f"Sending event {i+1}/{len(new_events)}: {event.get('id', 'unknown')}"
+                        logger.info(
+                            f"📤 Sending event {i+1}/{len(new_events)}: {event.get('id', 'unknown')} - {event.get('src_ip', 'unknown IP')}"
                         )
                         await websocket.send_json({"type": "attack", "data": event})
-                        logger.debug(f"Event {i+1}/{len(new_events)} sent successfully")
+                        logger.info(
+                            f"✅ Event {i+1}/{len(new_events)} sent successfully"
+                        )
                     except Exception as send_error:
                         logger.error(
-                            f"Failed to send event {event.get('id', 'unknown')}: {send_error}"
+                            f"❌ Failed to send event {event.get('id', 'unknown')}: {send_error}"
                         )
                         # If send fails, likely due to disconnection, break out
                         return
 
                 if new_events:
-                    logger.info(f"Sent {len(new_events)} new DShield events")
+                    logger.info(
+                        f"🎯 Sent {len(new_events)} new REAL DShield events to frontend"
+                    )
                 else:
-                    logger.debug("No new DShield events to send")
+                    logger.debug(
+                        "ℹ️  No new DShield events to send (all events already sent)"
+                    )
 
                 if len(sent_events) > 2000:
                     logger.debug("Clearing sent events cache")

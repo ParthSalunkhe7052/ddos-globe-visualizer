@@ -178,12 +178,12 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
     while attempt <= max_retries:
         try:
             logger.info(
-                f"DShield events fetch attempt {attempt + 1}/{max_retries + 1}: {DSHIELD_TOP_IPS_URL}"
+                f"🔍 DShield events fetch attempt {attempt + 1}/{max_retries + 1}: {DSHIELD_TOP_IPS_URL}"
             )
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(DSHIELD_TOP_IPS_URL)
                 logger.info(
-                    f"DShield events status={resp.status_code} length={len(resp.text)}"
+                    f"📡 DShield events status={resp.status_code} length={len(resp.text)}"
                 )
                 resp.raise_for_status()
 
@@ -232,11 +232,11 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
                                     continue
 
                         logger.info(
-                            f"DShield events XML parsed successfully: {len(entries)} entries"
+                            f"✅ DShield events XML parsed successfully: {len(entries)} entries"
                         )
 
                     except Exception as xml_err:
-                        logger.error(f"DShield events XML parse failed: {xml_err}")
+                        logger.error(f"❌ DShield events XML parse failed: {xml_err}")
                         logger.error(f"DShield events raw response: {resp.text[:500]}")
                         entries = []
                 else:
@@ -262,26 +262,28 @@ async def fetch_dshield_events(max_retries: int = 3, base_delay: float = 2.0):
                             normalized_events.append(normalized)
 
                 logger.info(
-                    f"DShield events fetch successful: {len(normalized_events)} events"
+                    f"🎯 DShield events fetch successful: {len(normalized_events)} normalized events ready to stream"
                 )
                 return normalized_events
 
         except Exception as e:
             attempt += 1
             logger.error(
-                f"DShield events fetch failed (attempt {attempt}/{max_retries + 1}): {e}"
+                f"❌ DShield events fetch failed (attempt {attempt}/{max_retries + 1}): {e}"
             )
             if attempt > max_retries:
                 break
             # Exponential backoff with jitter
             delay = base_delay * (2 ** (attempt - 1))
             delay += 0.5
-            logger.info(f"DShield events retrying in {delay:.1f}s...")
+            logger.info(f"⏳ DShield events retrying in {delay:.1f}s...")
             try:
                 await asyncio.sleep(delay)
             except Exception:
                 pass
-    logger.error("DShield events fetch failed after all retries")
+    logger.error(
+        "❌ DShield events fetch failed after all retries - returning empty list"
+    )
     return []
 
 
