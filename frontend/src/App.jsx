@@ -519,10 +519,19 @@ function AppContent() {
 
   // DShield streaming hook with rate limiting
   const addDShieldArc = useCallback((arc) => {
-    console.log("[App] 🎯 Adding DShield arc:", arc.id);
+    console.log("[App] 🎯 Adding DShield arc:", arc.id, "IP:", arc.ip);
+
+    // Show notification for new attack with IP details
+    if (arc.ip && arc.ip !== "Unknown") {
+      showToast(
+        `🎯 New Attack: ${arc.ip} (${arc.country || "Unknown"}) - ${arc.attackCount || 0} attacks`,
+        "info"
+      );
+    }
 
     setArcs((prev) => {
-      const updated = [arc, ...prev].slice(0, MAX_ARCS);
+      // Limit to 5 arcs maximum - remove oldest
+      const updated = [arc, ...prev].slice(0, 5);
       return updated;
     });
 
@@ -536,7 +545,7 @@ function AppContent() {
       return [newRing, ...prev].slice(0, 5);
     });
 
-    // Add point at source location
+    // Add point at source location with IP details
     setPoints((prev) => {
       const newPoint = {
         id: `point-${arc.id}`,
@@ -547,63 +556,67 @@ function AppContent() {
         timestamp: arc.timestamp,
         source: arc.source,
         confidence: arc.confidence,
+        ip: arc.ip,
+        country: arc.country,
+        attackCount: arc.attackCount,
       };
       return [newPoint, ...prev].slice(0, MAX_POINTS);
     });
 
-    // Remove arc and point after 30 seconds
+    // Remove arc and point after 25 seconds (5 arcs * 5 sec interval)
     setTimeout(() => {
       setArcs((prev) => prev.filter((a) => a.id !== arc.id));
       setPoints((prev) => prev.filter((p) => p.id !== `point-${arc.id}`));
-    }, 30000);
-  }, []);
+    }, 25000);
+  }, [showToast]);
 
   const handleDShieldStatus = useCallback(
     (status) => {
-      if (status.error) {
-        showToast &&
-          showToast(`DShield stream error: ${status.error}`, "error");
-      } else if (status.message === "DShield feed offline") {
-        showToast && showToast("DShield feed offline", "warning");
-      } else if (status.connected) {
-        showToast && showToast("Connected to DShield stream", "success");
-      }
+      // Don't show connection status notifications - too spammy
+      // Only log to console
+      console.log("[App] DShield status:", status);
     },
-    [showToast],
+    [],
   );
 
   const { isConnected: dshieldConnected, lastError: dshieldError } =
     useDShieldStream(liveMode, addDShieldArc, handleDShieldStatus);
 
   // Show subtle offline badge when live mode is ON but not connected
-  const LiveOfflineBadge = () => (
-    <div
-      style={{
-        position: "fixed",
-        top: 12,
-        right: 12,
-        zIndex: 20,
-        background: "rgba(220, 38, 38, 0.12)",
-        color: "#ef4444",
-        border: "1px solid rgba(239, 68, 68, 0.5)",
-        borderRadius: 8,
-        padding: "6px 10px",
-        fontSize: 12,
-        backdropFilter: "blur(4px)",
-      }}
-    >
-      Live feed offline
-    </div>
-  );
+  const LiveOfflineBadge = () => {
+    // Only show if live mode is enabled AND explicitly disconnected with error
+    if (!liveMode || !dshieldError) return null;
+    
+    return (
+      <div
+        style={{
+          position: "fixed",
+          top: 12,
+          right: 12,
+          zIndex: 20,
+          background: "rgba(220, 38, 38, 0.12)",
+          color: "#ef4444",
+          border: "1px solid rgba(239, 68, 68, 0.5)",
+          borderRadius: 8,
+          padding: "6px 10px",
+          fontSize: 12,
+          backdropFilter: "blur(4px)",
+        }}
+      >
+        Live feed offline
+      </div>
+    );
+  };
 
   // keep processed ids to avoid duplicates
   const processedEventIdsRef = useRef(new Set());
   useEffect(() => {
     if (liveMode) {
-      showToast && showToast("Live Mode enabled", "info");
+      // Don't spam notifications - just log
+      console.log("[App] Live Mode enabled");
     } else {
       processedEventIdsRef.current.clear();
-      showToast && showToast("Live Mode disabled", "info");
+      console.log("[App] Live Mode disabled");
     }
   }, [liveMode]);
 

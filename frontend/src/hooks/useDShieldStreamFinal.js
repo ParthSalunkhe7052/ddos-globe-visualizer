@@ -19,9 +19,10 @@ export default function useDShieldStreamFinal(liveMode, addArc, onStatus) {
 
   // Rate limiting
   const lastArcTimeRef = useRef(0);
-  const arcInterval = 7000; // 7 seconds between arcs
+  const arcInterval = 5000; // 5 seconds between arcs
   const eventQueueRef = useRef([]);
   const processingRef = useRef(false);
+  const isFirstEvent = useRef(true);
 
   const connect = useCallback(() => {
     // Prevent multiple connections
@@ -36,6 +37,8 @@ export default function useDShieldStreamFinal(liveMode, addArc, onStatus) {
       wsRef.current = null;
     }
 
+    // Reset first event flag for instant first arc
+    isFirstEvent.current = true;
     console.log("[useDShieldStreamFinal] 🔌 Connecting to:", wsUrl);
 
     try {
@@ -47,7 +50,8 @@ export default function useDShieldStreamFinal(liveMode, addArc, onStatus) {
         setIsConnected(true);
         setLastError(null);
         reconnectAttempts.current = 0;
-        onStatus && onStatus({ connected: true, error: null });
+        // Don't spam status notifications - only log
+        // onStatus && onStatus({ connected: true, error: null });
       };
 
       ws.onmessage = (event) => {
@@ -55,27 +59,17 @@ export default function useDShieldStreamFinal(liveMode, addArc, onStatus) {
           const msg = JSON.parse(event.data);
           console.log("[useDShieldStreamFinal] 📨 Received:", msg.type);
 
-          // Handle status messages
+          // Handle status messages (don't spam notifications)
           if (msg && msg.type === "status") {
             console.log("[useDShieldStreamFinal] 📊 Status:", msg.message);
-            onStatus &&
-              onStatus({
-                connected: true,
-                message: msg.message,
-                timestamp: msg.timestamp,
-              });
+            // Don't show status notifications - too spammy
             return;
           }
 
-          // Handle error messages
+          // Handle error messages (don't spam notifications)
           if (msg && msg.type === "error") {
             console.error("[useDShieldStreamFinal] ❌ Error:", msg.message);
-            onStatus &&
-              onStatus({
-                connected: false,
-                error: msg.message,
-                timestamp: msg.timestamp,
-              });
+            // Only log errors, don't show notifications
             return;
           }
 
@@ -153,7 +147,7 @@ export default function useDShieldStreamFinal(liveMode, addArc, onStatus) {
     }
   }, [liveMode, onStatus, wsUrl]);
 
-  // Process event queue with rate limiting
+  // Process event queue with rate limiting (5 seconds, instant first)
   const processEventQueue = useCallback(() => {
     if (processingRef.current) return;
 
@@ -163,7 +157,10 @@ export default function useDShieldStreamFinal(liveMode, addArc, onStatus) {
       const now = Date.now();
       const timeSinceLastArc = now - lastArcTimeRef.current;
 
-      if (timeSinceLastArc >= arcInterval && eventQueueRef.current.length > 0) {
+      // First event is instant, rest are rate-limited to 5 seconds
+      const shouldProcess = isFirstEvent.current || timeSinceLastArc >= arcInterval;
+
+      if (shouldProcess && eventQueueRef.current.length > 0) {
         // Get the most recent event
         const event = eventQueueRef.current.shift();
 
@@ -191,20 +188,26 @@ export default function useDShieldStreamFinal(liveMode, addArc, onStatus) {
             description: event.description,
             isFallback: isFallback,
             opacity: isFallback ? 0.7 : 1.0,
+            ip: event.src_ip || event.ip || "Unknown",
+            country: event.country_code || event.countryCode || "--",
+            attackCount: event.attack_count || 0,
           };
 
           console.log(
             "[useDShieldStreamFinal] 🎯 Adding arc to globe:",
             arc.id,
+            "IP:",
+            arc.ip,
           );
           addArc && addArc(arc);
 
           // Update last arc time
           lastArcTimeRef.current = now;
+          isFirstEvent.current = false; // No longer first event
 
-          // Clear old events (keep only last 3)
-          if (eventQueueRef.current.length > 3) {
-            eventQueueRef.current = eventQueueRef.current.slice(-3);
+          // Clear old events (keep only last 5)
+          if (eventQueueRef.current.length > 5) {
+            eventQueueRef.current = eventQueueRef.current.slice(-5);
           }
         }
       }
