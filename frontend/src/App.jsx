@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import Globe from "./components/Globe";
-import useDShieldStream from "./hooks/useDShieldStreamFinal";
 import ThemeToggle from "./components/ThemeToggle";
 import Sidebar from "./components/Sidebar";
 import StatsPanel from "./components/StatsPanel";
@@ -8,8 +7,8 @@ import { showToast } from "./components/Toast";
 import NotificationProvider from "./notifications/NotificationProvider";
 import NotificationPanel from "./notifications/NotificationPanel";
 import NotificationBell from "./notifications/NotificationBell";
+import LiveMode, { useLiveModeStatus } from "./components/LiveMode";
 import { clusterPoints } from "./utils/clusterPoints";
-import { debounce } from "./utils/debounce";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import "./App.css";
@@ -124,7 +123,7 @@ function SeverityLegend({ collapsed, onToggle, isMobile }) {
 /* =========================
    Constants & Utilities
 ========================= */
-const MAX_ARCS = 500;
+const MAX_ARCS = 5;
 const MAX_POINTS = 100;
 const LAST_N = 6;
 
@@ -153,12 +152,7 @@ function validIPv4(ip) {
   );
 }
 
-const severityColor = (score = 0) => {
-  const n = Number(score) || 0;
-  if (n >= 80) return "rgb(220,40,40)"; // red
-  if (n >= 40) return "rgb(255,140,0)"; // orange
-  return "rgb(255,220,80)"; // yellow
-};
+// removed unused severityColor helper
 
 // Preload texture and return a promise
 const preloadTexture = (url) => {
@@ -181,17 +175,13 @@ const loadTextureWithRetry = async (urls, maxRetries = 2) => {
         return url;
       } catch (err) {
         lastError = err;
-        console.warn(`Attempt ${i + 1} failed to load texture ${url}:`, err);
+        // swallow retries
       }
     }
     console.error(`All attempts to load texture ${url} failed:`, lastError);
   }
   return FALLBACK_TEXTURE;
 };
-
-function arcGradient(score = 0) {
-  return [severityColor(score), "rgba(255,255,255,0.6)"];
-}
 
 /* =========================
    Presentational Components
@@ -334,13 +324,92 @@ function SideInfoPanel({ info, collapsed, onToggle, isMobile }) {
                 {renderField("IP Address", info.ip)}
                 {renderField(
                   "Country",
-                  info.country || info.countryCode || info.geo_info?.country,
+                  info.countryName ||
+                    info.country ||
+                    info.countryCode ||
+                    info.geo_info?.country,
                 )}
                 {renderField("City", info.city || info.geo_info?.city)}
+
+                {/* Enhanced Live Mode attack details */}
+                {info.attackType && renderField("Attack Type", info.attackType)}
+                {info.severity && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "100px 1fr",
+                      gap: 6,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: "#FFD700",
+                        opacity: 0.9,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Severity
+                    </div>
+                    <div
+                      style={{
+                        color:
+                          info.severity === "High"
+                            ? "#ff6b6b"
+                            : info.severity === "Medium"
+                              ? "#ffa726"
+                              : "#66bb6a",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {info.severity}
+                    </div>
+                  </div>
+                )}
+                {info.source && renderField("Source", info.source)}
+                {info.target && renderField("Target", info.target)}
+
+                {/* Standard fields */}
+                {renderField("Attack Count", info.attackCount)}
+                {renderField("Targets", info.targets)}
+                {renderField("Rank", info.rank)}
+                {renderField("Protocol", info.protocol)}
                 {renderField("ASN", info.asn || abuse.asn)}
                 {renderField("ISP", info.isp || abuse.isp)}
                 {renderField("Domain", info.domain || abuse.domain)}
                 {renderField("Usage Type", info.usageType || abuse.usageType)}
+
+                {/* Enhanced description for Live Mode */}
+                {info.description && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "100px 1fr",
+                      gap: 6,
+                      alignItems: "flex-start",
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: "#FFD700",
+                        opacity: 0.9,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Description
+                    </div>
+                    <div
+                      style={{
+                        color: "#e8e8e8",
+                        fontSize: "12px",
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {info.description}
+                    </div>
+                  </div>
+                )}
+
                 {renderField(
                   "Last Seen",
                   info.lastSeen || abuse.lastReportedAt,
@@ -423,16 +492,57 @@ function SideInfoPanel({ info, collapsed, onToggle, isMobile }) {
    It returns a plain string; react-globe.gl will render it in a small tooltip. */
 function getTooltipContent(point) {
   if (!point) return "";
-  const { ip, city, country, abuse_info = {} } = point;
+  const {
+    ip,
+    city,
+    country,
+    countryName,
+    attackCount,
+    isp,
+    confidence,
+    attackType,
+    severity,
+    source,
+    target,
+    description,
+    abuse_info = {},
+  } = point;
   const abuseData = abuse_info.data || {};
-  const score = abuseData.abuseConfidenceScore ?? "–";
+  const score = confidence || abuseData.abuseConfidenceScore || 0;
   const usageType = abuseData.usageType || "Unknown";
+  const displayCountry = countryName || country || "Unknown";
+  const attacks = attackCount || 0;
 
+  // Enhanced tooltip for Live Mode attacks
+  if (attackType && severity) {
+    const severityColor =
+      severity === "High"
+        ? "#ff6b6b"
+        : severity === "Medium"
+          ? "#ffa726"
+          : "#66bb6a";
+    return `
+      <div style="min-width:220px; max-width:300px">
+        <b>${ip}</b><br/>
+        ${city ? city + ", " : ""}${displayCountry}<br/>
+        <span style="color:#FFD700">Confidence: ${score}%</span><br/>
+        <span style="color:${severityColor}">Severity: ${severity}</span><br/>
+        <span style="color:#74c0fc">Attack: ${attackType}</span><br/>
+        <span style="color:#ab47bc">Source: ${source || "Unknown"}</span><br/>
+        <span style="color:#26a69a">Target: ${target || "Unknown"}</span><br/>
+        ${description ? `<i style="font-size:11px; color:#90a4ae">${description.substring(0, 100)}${description.length > 100 ? "..." : ""}</i>` : ""}
+      </div>
+    `;
+  }
+
+  // Standard tooltip for manual IP lookups
   return `
-    <div style="min-width:150px">
+    <div style="min-width:180px">
       <b>${ip}</b><br/>
-      ${city ? city + ", " : ""}${country || ""}<br/>
-      <span style="color:#FFD700">Score: ${score}</span><br/>
+      ${city ? city + ", " : ""}${displayCountry}<br/>
+      <span style="color:#FFD700">Confidence: ${score}%</span><br/>
+      <span style="color:#ff6b6b">Attacks: ${attacks}</span><br/>
+      ${isp ? `<span style="color:#74c0fc">ISP: ${isp}</span><br/>` : ""}
       <i>${usageType}</i>
     </div>
   `;
@@ -444,27 +554,20 @@ function getTooltipContent(point) {
 function AppContent() {
   const { theme, toggleTheme } = useTheme();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Live Mode status hook
+  const {
+    status: liveModeStatus,
+    isChecking,
+    toggleLiveMode,
+  } = useLiveModeStatus();
   // State hooks
   const [ip, setIp] = useState("");
   const [legendCollapsed, setLegendCollapsed] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [currentIp, setCurrentIp] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [points, setPoints] = useState([]);
   const [arcs, setArcs] = useState([]);
-  // Live mode state: whether to receive and process live websocket events
-  // Default OFF to avoid fetching/rendering live notifications until user enables it
-  const [liveMode, setLiveMode] = useState(false);
 
-  // Clear all visualizations when component mounts or live mode is disabled
-  useEffect(() => {
-    setPoints([]);
-    setArcs([]);
-    setLoading(false);
-    if (processedEventIdsRef.current) {
-      processedEventIdsRef.current.clear();
-    }
-  }, [liveMode]);
   const [rings, setRings] = useState([]);
   const [autoRotate, setAutoRotate] = useState(true);
   const [rotateSpeed, setRotateSpeed] = useState(0.5);
@@ -480,33 +583,13 @@ function AppContent() {
   });
   const [globeTexture, setGlobeTexture] = useState(GLOBE_TEXTURES[0].url);
   const [globeReady, setGlobeReady] = useState(false);
-  const [textureError, setTextureError] = useState(false);
 
-  // Handle texture loading errors
-  const handleTextureError = useCallback(() => {
-    console.error("Failed to load globe texture:", globeTexture);
-    setTextureError(true);
-    setGlobeTexture(FALLBACK_TEXTURE);
-    showToast("Failed to load globe texture, using fallback", "warning");
-  }, [globeTexture]);
-
-  // Reset texture error when changing texture
-  useEffect(() => {
-    setTextureError(false);
-  }, [globeTexture]);
   // Filter state
   const [filterCountry, setFilterCountry] = useState("");
   const [filterSeverity, setFilterSeverity] = useState("");
   // Heatmap mode state
   const [heatmapMode, setHeatmapMode] = useState(false);
 
-  // Sync live mode state with window for cache control
-  useEffect(() => {
-    window.__liveModeEnabled = liveMode;
-    if (!liveMode) {
-      localStorage.removeItem("live_feed");
-    }
-  }, [liveMode]);
   // Severity color for heatmap mode
   const getSeverityColor = (score) => {
     if (score >= 70) return "red";
@@ -517,171 +600,176 @@ function AppContent() {
   // Ref (must be before any useEffect that uses it)
   const globeRef = useRef();
 
-  // DShield streaming hook with rate limiting
-  const addDShieldArc = useCallback((arc) => {
-    console.log("[App] 🎯 Adding DShield arc:", arc.id, "IP:", arc.ip);
+  // Enhanced arc generation function
+  const createArcWithPoint = useCallback(
+    (
+      startLat,
+      startLng,
+      endLat,
+      endLng,
+      color,
+      ip,
+      score,
+      additionalData = {},
+    ) => {
+      const now = Date.now();
 
-    // Show notification for new attack with IP details
-    if (arc.ip && arc.ip !== "Unknown") {
-      showToast(
-        `🎯 New Attack: ${arc.ip} (${arc.country || "Unknown"}) - ${arc.attackCount || 0} attacks`,
-        "info"
-      );
-    }
-
-    setArcs((prev) => {
-      // Limit to 5 arcs maximum - remove oldest
-      const updated = [arc, ...prev].slice(0, 5);
-      return updated;
-    });
-
-    // Add pulse ring at destination
-    setRings((prev) => {
-      const newRing = {
-        id: `ring-${arc.id}`,
-        lat: arc.endLat,
-        lng: arc.endLng,
-      };
-      return [newRing, ...prev].slice(0, 5);
-    });
-
-    // Add point at source location with IP details
-    setPoints((prev) => {
       const newPoint = {
-        id: `point-${arc.id}`,
-        lat: arc.startLat,
-        lng: arc.startLng,
-        color: arc.color,
-        size: 0.5 + (arc.confidence / 100) * 0.5,
-        timestamp: arc.timestamp,
-        source: arc.source,
-        confidence: arc.confidence,
-        ip: arc.ip,
-        country: arc.country,
-        attackCount: arc.attackCount,
+        id: `${ip || "unknown"}-${now}`,
+        lat: endLat,
+        lng: endLng,
+        ip: ip || "Unknown",
+        color,
+        score: score || 0,
+        timestamp: now,
+        ...additionalData,
       };
-      return [newPoint, ...prev].slice(0, MAX_POINTS);
-    });
 
-    // Remove arc and point after 25 seconds (5 arcs * 5 sec interval)
-    setTimeout(() => {
-      setArcs((prev) => prev.filter((a) => a.id !== arc.id));
-      setPoints((prev) => prev.filter((p) => p.id !== `point-${arc.id}`));
-    }, 25000);
-  }, [showToast]);
+      const newArc = {
+        id: `arc-${now}`,
+        startLat,
+        startLng,
+        endLat,
+        endLng,
+        color,
+        altitude: 0.3 + Math.random() * 0.4,
+        timestamp: now,
+        pointId: newPoint.id,
+        stroke: 1.2,
+        dashLength: 0.8,
+        dashGap: 0.3,
+      };
 
-  const handleDShieldStatus = useCallback(
-    (status) => {
-      // Don't show connection status notifications - too spammy
-      // Only log to console
-      console.log("[App] DShield status:", status);
+      return { newPoint, newArc };
     },
     [],
   );
 
-  const { isConnected: dshieldConnected, lastError: dshieldError } =
-    useDShieldStream(liveMode, addDShieldArc, handleDShieldStatus);
+  // Enhanced cleanup function that ensures arc-point synchronization
+  const cleanupArcAndPoint = useCallback((arcId, pointId) => {
+    setArcs((prev) => prev.filter((a) => a.id !== arcId));
+    setPoints((prev) => prev.filter((p) => p.id !== pointId));
+  }, []);
 
-  // Show subtle offline badge when live mode is ON but not connected
-  const LiveOfflineBadge = () => {
-    // Only show if live mode is enabled AND explicitly disconnected with error
-    if (!liveMode || !dshieldError) return null;
-    
-    return (
-      <div
-        style={{
-          position: "fixed",
-          top: 12,
-          right: 12,
-          zIndex: 20,
-          background: "rgba(220, 38, 38, 0.12)",
-          color: "#ef4444",
-          border: "1px solid rgba(239, 68, 68, 0.5)",
-          borderRadius: 8,
-          padding: "6px 10px",
-          fontSize: 12,
-          backdropFilter: "blur(4px)",
-        }}
-      >
-        Live feed offline
-      </div>
-    );
-  };
-
-  // keep processed ids to avoid duplicates
-  const processedEventIdsRef = useRef(new Set());
+  // Clean up old arcs and points periodically and enforce 5-arc limit
   useEffect(() => {
-    if (liveMode) {
-      // Don't spam notifications - just log
-      console.log("[App] Live Mode enabled");
-    } else {
-      processedEventIdsRef.current.clear();
-      console.log("[App] Live Mode disabled");
-    }
-  }, [liveMode]);
+    // Listen for Live Mode live events to render arcs
+    function onLiveAttack(e) {
+      try {
+        const {
+          lat,
+          lng,
+          confidencePct,
+          ip,
+          seenAt,
+          country,
+          city,
+          attackType,
+          severity,
+          source,
+          target,
+          description,
+        } = e.detail || {};
 
-  // DShield streaming - no random arcs in production
-  useEffect(() => {
-    if (!liveMode) return;
+        if (typeof lat !== "number" || typeof lng !== "number") return;
+        const now = Date.now();
+        const pov = globeRef.current?.pointOfView?.() || { lat: 0, lng: 0 };
+        const startLat = typeof pov.lat === "number" ? pov.lat : 0;
+        const startLng = typeof pov.lng === "number" ? pov.lng : 0;
+        const color = getColorByScore(confidencePct);
 
-    // Only allow random arcs in development with explicit flag
-    const allowRandomArcs =
-      import.meta?.env?.MODE === "development" &&
-      import.meta?.env?.VITE_ALLOW_RANDOM_ARCS === "true";
-
-    if (allowRandomArcs) {
-      console.warn("Random arcs enabled for development only");
-      const generateRandomArc = () => {
-        const startLat = Math.random() * 180 - 90;
-        const startLng = Math.random() * 360 - 180;
-        const endLat = Math.random() * 180 - 90;
-        const endLng = Math.random() * 360 - 180;
-
-        const arcId = `dev-arc-${Date.now()}-${Math.random()}`;
-        const severity = Math.random();
-        const color =
-          severity > 0.7 ? "red" : severity > 0.4 ? "orange" : "yellow";
-
-        const newArc = {
-          id: arcId,
+        // Create enhanced point with all the detailed information
+        const { newPoint, newArc } = createArcWithPoint(
           startLat,
           startLng,
-          endLat,
-          endLng,
+          lat,
+          lng,
           color,
-          altitude: 0.25 + Math.random() * 0.5,
-          timestamp: Date.now(),
-        };
+          ip,
+          confidencePct,
+          {
+            timestamp: seenAt || now,
+            country: country || "Unknown",
+            city: city || "Unknown",
+            attackType: attackType || "Unknown",
+            severity: severity || "Medium",
+            source: source || "Unknown",
+            target: target || "Unknown",
+            description: description || "Cybersecurity incident detected.",
+            // Add abuse_info structure for compatibility
+            abuse_info: {
+              data: {
+                abuseConfidenceScore: confidencePct,
+                attackType: attackType,
+                severity: severity,
+                source: source,
+                target: target,
+              },
+            },
+            // Add geo_info structure for compatibility
+            geo_info: {
+              country: country,
+              city: city,
+              latitude: lat,
+              longitude: lng,
+            },
+          },
+        );
 
+        setPoints((prev) => [newPoint, ...prev].slice(0, MAX_POINTS));
         setArcs((prev) => [newArc, ...prev].slice(0, MAX_ARCS));
-        setRings((prev) => {
-          const newRing = { id: `ring-${arcId}`, lat: endLat, lng: endLng };
-          return [newRing, ...prev].slice(0, 5);
-        });
+        setRings([{ id: `ring-${now}`, lat, lng }]);
+
+        // Show enhanced toast notification
+        showToast(
+          `${attackType || "Attack"} detected in ${city || "Unknown"}, ${country || "Unknown"}`,
+          severity === "High"
+            ? "error"
+            : severity === "Medium"
+              ? "warning"
+              : "info",
+        );
 
         setTimeout(() => {
-          setArcs((prev) => prev.filter((a) => a.id !== arcId));
-        }, 15000);
-      };
-
-      const interval = setInterval(
-        generateRandomArc,
-        2000 + Math.random() * 3000,
-      );
-      return () => clearInterval(interval);
+          cleanupArcAndPoint(newArc.id, newPoint.id);
+        }, 30000);
+      } catch (error) {
+        console.error("Error handling live mode attack:", error);
+      }
     }
-  }, [liveMode]);
+    window.addEventListener("livemode-attack", onLiveAttack);
+    return () => window.removeEventListener("livemode-attack", onLiveAttack);
+  }, []);
 
-  // Live mode uses DShield stream only to avoid duplicate connections
-
-  // prune arcs older than 30s every 5s
   useEffect(() => {
     const id = setInterval(() => {
-      const cutoff = Date.now() - 30_000;
-      setArcs((prev) => prev.filter((a) => (a.timestamp || 0) >= cutoff));
+      const cutoff = Date.now() - 30_000; // Remove arcs older than 30 seconds
+
+      // First, get current arcs to determine which points should remain
+      setArcs((prev) => {
+        const filtered = prev.filter((a) => (a.timestamp || 0) >= cutoff);
+        // Enforce 5-arc limit - if more than 5, keep only the newest 5
+        const finalArcs = filtered.length > 5 ? filtered.slice(0, 5) : filtered;
+
+        // Get the point IDs that should remain (from active arcs)
+        const activePointIds = new Set(
+          finalArcs.map((a) => a.pointId).filter(Boolean),
+        );
+
+        // Remove points that are not associated with active arcs
+        setPoints((currentPoints) => {
+          return currentPoints.filter((p) => {
+            // Keep points that are associated with active arcs OR are not arc-related
+            return activePointIds.has(p.id) || !p.id.includes("-");
+          });
+        });
+
+        return finalArcs;
+      });
     }, 5000);
+
     return () => clearInterval(id);
-  }, []);
+  }, [cleanupArcAndPoint]);
 
   // Handler to clear all state and reset globe
   const handleClearAll = () => {
@@ -689,9 +777,7 @@ function AppContent() {
     setArcs([]);
     setRings([]);
     setSelectedInfo(null);
-    setCurrentIp("");
     setRecentIps([]);
-    processedEventIdsRef.current.clear();
     localStorage.removeItem("recentIps");
     globeRef.current?.pointOfView({ lat: 0, lng: 0, altitude: 2 }, 1500);
   };
@@ -703,7 +789,6 @@ function AppContent() {
     );
   }, [theme]);
   const handleThemeToggle = () => {
-    console.log("Theme button clicked!");
     toggleTheme();
   };
   const handleLegendToggle = () => setLegendCollapsed((c) => !c);
@@ -750,13 +835,13 @@ function AppContent() {
         ]);
         if (mounted) {
           setGlobeTexture(textureUrl);
-          setTextureError(textureUrl === FALLBACK_TEXTURE);
+          // no-op
         }
       } catch (err) {
         console.error("Failed to load any globe textures:", err);
         if (mounted) {
           setGlobeTexture(FALLBACK_TEXTURE);
-          setTextureError(true);
+          // no-op
           showToast("Failed to load globe textures", "error");
         }
       } finally {
@@ -770,7 +855,7 @@ function AppContent() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [globeTexture]);
 
   // Globe ready handler
   const handleGlobeReady = useCallback(() => {
@@ -817,9 +902,11 @@ function AppContent() {
     a.click();
   }
 
+  const BACKEND_URL =
+    import.meta.env?.VITE_BACKEND_URL || "http://127.0.0.1:8000";
   async function handleAnalyze(targetIp) {
     setLoading(true);
-    fetch(`http://127.0.0.1:8000/analyze_ip?ip=${encodeURIComponent(targetIp)}`)
+    fetch(`${BACKEND_URL}/analyze_ip?ip=${encodeURIComponent(targetIp)}`)
       .then((res) => {
         if (!res.ok) throw new Error(`Backend responded ${res.status}`);
         return res.json();
@@ -832,7 +919,7 @@ function AppContent() {
         const country = geo.country || "Unknown";
 
         if (typeof latitude !== "number" || typeof longitude !== "number") {
-          console.warn("No geolocation returned for IP:", targetIp, data);
+          // no geolocation returned
           showToast("No geolocation returned for IP", "error");
           return;
         }
@@ -852,32 +939,25 @@ function AppContent() {
 
         // Add point and arc with timestamp
         const now = Date.now();
-        const newPoint = {
-          id: `${targetIp}-${now}`,
-          lat: latitude,
-          lng: longitude,
-          ip: data.ip || targetIp,
-          country,
-          color, // <— new color
-          score,
-          city: geo.city,
-          abuse_info: data.abuse_info,
-          geo_info: data.geo_info,
-          timestamp: now,
-        };
-        setPoints((prev) => [newPoint, ...prev].slice(0, MAX_POINTS));
-        setSelectedInfo(newPoint);
-
-        const newArc = {
-          id: `arc-${now}`,
+        const { newPoint, newArc } = createArcWithPoint(
           startLat,
           startLng,
-          endLat: latitude,
-          endLng: longitude,
-          color, // <— use the same color here
-          altitude: 0.25 + Math.random() * 0.5,
-          timestamp: now,
-        };
+          latitude,
+          longitude,
+          color,
+          data.ip || targetIp,
+          score,
+          {
+            country,
+            city: geo.city,
+            abuse_info: data.abuse_info,
+            geo_info: data.geo_info,
+            timestamp: now,
+          },
+        );
+
+        setPoints((prev) => [newPoint, ...prev].slice(0, MAX_POINTS));
+        setSelectedInfo(newPoint);
         setArcs((prev) => [newArc, ...prev].slice(0, MAX_ARCS));
 
         // Pulse ring
@@ -891,8 +971,7 @@ function AppContent() {
         );
         setTimeout(() => setAutoRotate(true), 2000);
 
-        // Shareable link + current IP
-        setCurrentIp(targetIp);
+        // Update URL with current IP
         window.history.replaceState(
           {},
           "",
@@ -909,9 +988,9 @@ function AppContent() {
           return dedup;
         });
 
-        // Remove arc after 30s to keep scene fresh
+        // Remove arc and associated point after 30s to keep scene fresh
         setTimeout(() => {
-          setArcs((prev) => prev.filter((a) => a.id !== newArc.id));
+          cleanupArcAndPoint(newArc.id, newPoint.id);
         }, 30000);
 
         showToast("IP data loaded successfully", "success");
@@ -967,9 +1046,7 @@ function AppContent() {
   /* =========================
      Render
   ========================= */
-  // Log filtered counts for debugging
-  console.log("filteredPoints.length:", filteredPoints.length);
-  console.log("filteredArcs.length:", filteredArcs.length);
+  // Debug logs removed
   return (
     <NotificationProvider>
       <div
@@ -1139,12 +1216,19 @@ function AppContent() {
           </button>
           <button
             type="button"
-            className="ip-button"
-            onClick={() => setLiveMode((l) => !l)}
-            title="Toggle Live Mode"
-            aria-label="Toggle Live Mode"
+            className={`ip-button live-mode-btn ${liveModeStatus === "on" ? "live-mode-on" : "live-mode-off"}`}
+            onClick={toggleLiveMode}
+            disabled={isChecking}
+            title={
+              isChecking
+                ? "Checking backend..."
+                : liveModeStatus === "on"
+                  ? "Live Mode is active"
+                  : "Toggle Live Mode"
+            }
+            aria-label={`Live Mode ${liveModeStatus === "on" ? "On" : "Off"}`}
           >
-            {liveMode ? "Live: On" : "Live: Off"}
+            {isChecking ? "Checking..." : "Live Mode"}
           </button>
           <button
             type="button"
@@ -1192,9 +1276,6 @@ function AppContent() {
             </button>
           </div>
         </form>
-
-        {/* Live offline badge */}
-        {liveMode && !dshieldConnected && <LiveOfflineBadge />}
 
         {/* Search/filter input */}
         <div style={{ position: "absolute", top: 20, right: 20, zIndex: 10 }}>
@@ -1302,13 +1383,13 @@ function AppContent() {
                       )
                     : d.isCluster
                       ? "#FFD700"
-                      : d.color
+                      : d.color || "#FFD700"
                 }
                 pointAltitude={(d) =>
-                  d.isCluster ? 0.025 : 0.005 + ((d.score || 0) / 100) * 0.01
+                  d.isCluster ? 0.025 : 0.008 + ((d.score || 0) / 100) * 0.015
                 }
                 pointRadius={(d) =>
-                  d.isCluster ? 1.2 + 0.2 * Math.log2(d.count) : 0.7
+                  d.isCluster ? 1.2 + 0.2 * Math.log2(d.count) : 0.8
                 }
                 onPointClick={(point) => {
                   if (point.isCluster) {
@@ -1353,11 +1434,11 @@ function AppContent() {
                       )
                     : "#FFD700"
                 }
-                arcAltitude={(d) => d.altitude}
-                arcStroke={0.9}
-                arcDashLength={0.6}
-                arcDashGap={0.4}
-                arcDashAnimateTime={2000}
+                arcAltitude={(d) => d.altitude || 0.5}
+                arcStroke={(d) => d.stroke || 1.0}
+                arcDashLength={(d) => d.dashLength || 0.6}
+                arcDashGap={(d) => d.dashGap || 0.4}
+                arcDashAnimateTime={2500}
                 ringsData={rings}
                 ringLat={(d) => d.lat}
                 ringLng={(d) => d.lng}
@@ -1411,13 +1492,19 @@ function AppContent() {
         </div>
 
         {/* Severity Legend */}
-        <div style={{ position: "fixed", left: 18, bottom: 18, zIndex: 10 }}>
+        <div
+          id="severity-legend-box"
+          style={{ position: "fixed", left: 18, bottom: 18, zIndex: 10 }}
+        >
           <SeverityLegend
             collapsed={legendCollapsed}
             onToggle={handleLegendToggle}
             isMobile={isMobile}
           />
         </div>
+
+        {/* Live Mode Logic (no UI) */}
+        <LiveMode />
 
         {/* Side Info Panel (right) */}
         <SideInfoPanel

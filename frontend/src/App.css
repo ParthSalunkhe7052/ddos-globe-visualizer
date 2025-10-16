@@ -31,6 +31,7 @@
     transform: rotate(360deg);
   }
 }
+
 body.dark-theme {
   background-color: #121212;
   color: #f1f1f1;
@@ -40,6 +41,7 @@ body.light-theme {
   background-color: #f9f9f9;
   color: #121212;
 }
+
 /* === Left Features Column === */
 .left-features {
   position: absolute;
@@ -97,11 +99,13 @@ body.light-theme {
 .input-container {
   margin-left: 220px;
 }
+
 @media (max-width: 700px) {
   .input-container {
     margin-left: 0;
   }
 }
+
 .left-features .globe-theme-select:hover,
 .left-features .globe-theme-select:focus {
   box-shadow: 0 0 6px rgba(255, 215, 0, 0.4);
@@ -111,9 +115,11 @@ body.light-theme {
 .severity-legend {
   transition: all 0.25s ease-in-out;
 }
+
 .side-info-panel {
   margin-top: 40px;
 }
+
 /* === Side Info Panel === */
 .side-info-panel {
   position: absolute;
@@ -195,6 +201,7 @@ body.light-theme {
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.13);
   }
 }
+
 /* === Severity Color Legend === */
 .severity-legend {
   position: absolute;
@@ -291,6 +298,7 @@ body.light-theme {
     max-width: 90vw;
   }
 }
+
 /* === Global styles === */
 body,
 html,
@@ -298,7 +306,8 @@ html,
   margin: 0;
   padding: 0;
   height: 100%;
-  background-color: #121212; /* dark background */
+  background-color: #121212;
+  /* dark background */
   font-family: "Segoe UI", sans-serif;
   color: #f1f1f1;
 }
@@ -319,7 +328,8 @@ html,
 .app-header {
   font-size: 2rem;
   font-weight: bold;
-  color: #ffd700; /* yellow pop */
+  color: #ffd700;
+  /* yellow pop */
   margin-top: 10px;
   text-align: center;
   text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
@@ -331,7 +341,8 @@ html,
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 15px;
-  z-index: 2; /* above globe */
+  z-index: 2;
+  /* above globe */
   justify-content: center;
 }
 
@@ -347,6 +358,7 @@ html,
   box-shadow: 0 0 5px rgba(255, 255, 255, 0.1);
   transition: box-shadow 0.2s ease;
 }
+
 .ip-input:focus {
   box-shadow: 0 0 8px rgba(255, 215, 0, 0.4);
 }
@@ -366,11 +378,13 @@ html,
     transform 0.2s ease,
     box-shadow 0.25s ease;
 }
+
 .ip-button:hover {
   background-color: #e6c200;
   transform: scale(1.05);
   box-shadow: 0 0 6px rgba(255, 215, 0, 0.4);
 }
+
 .ip-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -387,7 +401,8 @@ html,
 /* wrapper gives some breathing space under the form */
 .globe-wrapper {
   position: absolute;
-  top: 100px; /* push globe down from top */
+  top: 100px;
+  /* push globe down from top */
   left: 0;
   width: 100%;
   height: calc(100% - 100px);
@@ -410,15 +425,18 @@ html,
   stroke-width: 2px;
   animation: pulse 1.5s infinite;
 }
+
 @keyframes pulse {
   0% {
     r: 3;
     opacity: 1;
   }
+
   50% {
     r: 6;
     opacity: 0.5;
   }
+
   100% {
     r: 3;
     opacity: 1;
@@ -429,10 +447,12 @@ html,
 .app-container {
   animation: fadein 0.8s ease-out;
 }
+
 @keyframes fadein {
   from {
     opacity: 0;
   }
+
   to {
     opacity: 1;
   }
@@ -533,4 +553,36 @@ html,
     min-width: 0;
     max-width: 90vw;
   }
+}
+
+/* --- Live Mode styles --- */
+.live-mode-btn {
+  transition: all 0.3s ease;
+}
+
+.live-mode-btn.live-mode-off {
+  background: #3b82f6;
+  /* Blue - Live Mode off */
+  border-color: #3b82f6;
+}
+
+.live-mode-btn.live-mode-off:hover {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.live-mode-btn.live-mode-on {
+  background: #10b981;
+  /* Green - Live Mode on */
+  border-color: #10b981;
+}
+
+.live-mode-btn.live-mode-on:hover {
+  background: #059669;
+  border-color: #059669;
+}
+
+.live-mode-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
 }

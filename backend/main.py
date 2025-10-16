@@ -2,21 +2,16 @@ import asyncio
 import ipaddress
 import json
 import logging
-import math
 import os
+import os as _os
 import random
-import threading
-import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
-import xmltodict
 # Import our services
 from abuseipdb_service import check_ip
 from dotenv import load_dotenv
-from dshield_service import (fetch_dshield_events, fetch_dshield_top_ips,
-                             generate_mock_dshield_events)
 from error_handler import (APIError, InvalidIPError, RateLimitError,
                            ServiceUnavailableError, handle_ws_error,
                            setup_error_handlers)
@@ -27,85 +22,39 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from geo_service import ip_to_location
 from ip_cache import get_cached, set_cache
+from live_feed_service import get_service
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# Custom log handler for WebSocket streaming
-class WebSocketLogHandler(logging.Handler):
-    def __init__(self, manager=None):
-        super().__init__()
-        self.manager = manager
-
-    def emit(self, record):
-        try:
-            if self.manager is not None:
-                log_entry = {
-                    "type": "log",
-                    "level": record.levelname.lower(),
-                    "message": self.format(record),
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                }
-                # Send to all connected log WebSocket clients
-                asyncio.create_task(self.manager.broadcast_log(log_entry))
-        except Exception:
-            pass  # Don't let logging errors break the application
-
-
-# Add WebSocket log handler
-ws_log_handler = WebSocketLogHandler(None)  # Will be set after manager is created
-ws_log_handler.setLevel(logging.INFO)
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-ws_log_handler.setFormatter(formatter)
-logger.addHandler(ws_log_handler)
-
 # Load environment variables
 load_dotenv(override=True)
 ABUSEIPDB_KEY = os.getenv("ABUSEIPDB_KEY")
-FEED_MODE = os.getenv("DShieldMode", "live").lower()  # live | fallback
+OTX_API_KEY = os.getenv("OTX_API_KEY")
 
-# Print configuration for debugging
-print(f"🔧 Backend Configuration:")
-print(f"   Feed Mode: {FEED_MODE}")
-print(f"   AbuseIPDB Key: {'Set' if ABUSEIPDB_KEY else 'Not set'}")
-print(f"   Use Mock Data: {os.getenv('USE_MOCK_DATA', 'false')}")
+# Avoid noisy configuration prints in production
 
 # Global caches and state
-DShieldCache: Dict[str, Any] = {"attacks": [], "last_fetch": None}
 EnrichCache: Dict[str, Any] = {}
 AbuseIPDB429: Dict[str, Optional[datetime]] = {"blocked_until": None}
-LIVE_CACHE: Dict[str, Any] = {
-    "lock": threading.Lock(),
-    "data": [],
-    "timestamp": time.time(),
-}
 
 # Background polling intervals (seconds)
 ABUSEIPDB_INTERVAL = int(os.getenv("ABUSEIPDB_INTERVAL", "300"))
-DSHIELD_INTERVAL = int(os.getenv("DSHIELD_INTERVAL", "300"))
 
 
 # WebSocket Connection Manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
-        self.log_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
 
-    async def connect_log(self, websocket: WebSocket):
-        await websocket.accept()
-        self.log_connections.append(websocket)
-
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-        if websocket in self.log_connections:
-            self.log_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
         to_remove = []
@@ -117,21 +66,488 @@ class ConnectionManager:
         for ws in to_remove:
             self.disconnect(ws)
 
-    async def broadcast_log(self, message: dict):
-        to_remove = []
-        for connection in self.log_connections:
+
+manager = ConnectionManager()
+
+
+# Attack Live Mode state
+class LiveConnectionManager:
+    def __init__(self):
+        self.live_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.live_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.live_connections:
+            self.live_connections.remove(websocket)
+
+    async def broadcast(self, payload: dict):
+        to_remove: list[WebSocket] = []
+        for ws in self.live_connections:
             try:
-                await connection.send_json(message)
+                await ws.send_json(payload)
             except Exception:
-                to_remove.append(connection)
+                to_remove.append(ws)
         for ws in to_remove:
             self.disconnect(ws)
 
 
-manager = ConnectionManager()
+live_manager = LiveConnectionManager()
 
-# Update the WebSocket log handler with the manager
-ws_log_handler.manager = manager
+# Queues and indexes
+EventQueue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+RecentIndex: Dict[str, datetime] = {}
+RecentIocFeeds: Dict[str, List[Dict[str, Any]]] = {}
+FeedBackoff: Dict[str, Dict[str, Any]] = {}
+FeedStatus: Dict[str, str] = {}
+Counters: Dict[str, int] = {
+    "events_received": 0,
+    "events_emitted": 0,
+    "events_dropped": 0,
+}
+
+# Collapse aggregation by masked source (30s window)
+CollapseIndex: Dict[str, Dict[str, Any]] = {}
+
+# Feed intervals (seconds)
+FEED_INTERVALS = {
+    "threatfox": 30,
+    "urlhaus": 600,
+    "malwarebazaar": 60,
+    "otx": 30,
+}
+
+
+def _now() -> datetime:
+    return datetime.utcnow()
+
+
+def _exp_backoff(feed: str, base: int) -> int:
+    state = FeedBackoff.setdefault(feed, {"retries": 0, "until": None, "delay": base})
+    retries = state["retries"] = min(state["retries"] + 1, 7)
+    delay = min(base * (2 ** (retries - 1)), 600)
+    state["delay"] = delay
+    state["until"] = _now() + timedelta(seconds=delay)
+    FeedStatus[feed] = "backoff"
+    return delay
+
+
+def _reset_backoff(feed: str):
+    FeedBackoff[feed] = {
+        "retries": 0,
+        "until": None,
+        "delay": FEED_INTERVALS.get(feed, 60),
+    }
+    FeedStatus[feed] = "ok"
+
+
+def _masked_ip(ip: str) -> str:
+    try:
+        parts = ip.split(".")
+        if len(parts) == 4:
+            return ".".join(parts[:3] + ["*"])
+    except Exception:
+        pass
+    return ip
+
+
+def _headline(event: Dict[str, Any]) -> str:
+    ioc = event.get("ioc", "")
+    ioc_type = event.get("ioc_type", "")
+    feed = event.get("feed", "")
+    tags = ",".join(event.get("tags", []) or [])
+    conf_pct = int(round((event.get("confidence", 0.0) or 0.0) * 100))
+    enrich = event.get("enrich") or {}
+    country = enrich.get("country", "?")
+    city = enrich.get("city", "?")
+    isp = enrich.get("isp", "?")
+    ioc_short = _masked_ip(ioc) if ioc_type == "ip" else ioc
+    # Default template
+    return f"⚡ Attack detected — {city}, {country} → demo-target · Confidence {conf_pct}%, Source: {feed}, IOC: {ioc_short}"
+
+
+def _confidence(base: float, event: Dict[str, Any]) -> float:
+    ioc = event["ioc"]
+    feed = event["feed"]
+    ioc_type = event["ioc_type"]
+    extra = []
+
+    # Cross-feed within 60s → 0.9
+    recent = RecentIocFeeds.get(ioc, [])
+    cutoff = _now() - timedelta(seconds=60)
+    recent = [r for r in recent if r["time"] >= cutoff]
+    RecentIocFeeds[ioc] = recent
+    feeds_recent = {r["feed"] for r in recent}
+    if len(feeds_recent) >= 2 or (len(feeds_recent) == 1 and feed not in feeds_recent):
+        extra.append(0.9)
+
+    # ThreatFox C2/Botnet
+    if feed == "threatfox" and any(
+        t in (event.get("tags") or []) for t in ["c2", "botnet", "c2_server"]
+    ):
+        extra.append(0.85)
+
+    # URLhaus URLs
+    if feed == "urlhaus" and ioc_type == "url":
+        extra.append(0.7)
+
+    if not extra:
+        extra.append(0.5)
+
+    conf = sum([base] + extra) / (1 + len(extra))
+    return max(0.0, min(conf, 1.0))
+
+
+def _normalize(feed: str, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        if feed == "threatfox":
+            ioc_type = (raw.get("ioc_type") or raw.get("type") or "").lower()
+            ioc = raw.get("ioc") or raw.get("value")
+            item_id = str(raw.get("id") or raw.get("_id") or ioc)
+            tags = raw.get("tags") or raw.get("malware") or []
+            sev = raw.get("confidence_level") or raw.get("confidence")
+        elif feed == "urlhaus":
+            ioc_type = "url"
+            ioc = raw.get("url")
+            item_id = str(raw.get("id") or raw.get("entry_id") or ioc)
+            tags = raw.get("tags") or []
+            sev = raw.get("threat") or raw.get("confidence")
+        elif feed == "malwarebazaar":
+            ioc_type = "hash"
+            ioc = raw.get("sha256") or raw.get("sha1") or raw.get("md5")
+            item_id = str(raw.get("sha256") or raw.get("id") or ioc)
+            tags = raw.get("tags") or raw.get("file_type") or []
+            sev = raw.get("confidence")
+        elif feed == "otx":
+            ind = raw.get("indicator") or {}
+            ioc = ind.get("indicator") or raw.get("indicator")
+            ioc_type = (ind.get("type") or raw.get("type") or "").lower()
+            item_id = str(raw.get("pulse_id") or raw.get("id") or ioc)
+            tags = raw.get("tags") or ind.get("tags") or []
+            sev = raw.get("confidence") or ind.get("confidence")
+        else:
+            return None
+
+        if not ioc or not ioc_type:
+            return None
+
+        # Map OTX types
+        if ioc_type in ["domain", "hostname"]:
+            ioc_type = "domain"
+        if ioc_type in ["IPv4", "ip", "ipv4"]:
+            ioc_type = "ip"
+
+        base = 0.5
+        if isinstance(sev, (int, float)):
+            sev_norm = max(0.0, min(float(sev) / (100.0 if sev > 1 else 1.0), 1.0))
+            base = (base + sev_norm) / 2.0
+
+        event = {
+            "id": f"{feed}-{item_id}",
+            "seen_at": iso_now(),
+            "feed": feed,
+            "ioc_type": ioc_type,
+            "ioc": ioc,
+            "src_ip": ioc if ioc_type == "ip" else None,
+            "tags": tags if isinstance(tags, list) else [tags] if tags else [],
+            "confidence": 0.0,  # set below
+            "meta": {"original": raw},
+            "enrich": {},
+            "headline": "",
+        }
+
+        # Track recent feeds per IOC
+        RecentIocFeeds.setdefault(ioc, []).append({"feed": feed, "time": _now()})
+
+        event["confidence"] = _confidence(base, event)
+        event["headline"] = _headline(event)
+        return event
+    except Exception as e:
+        logger.warning(f"Normalize error for feed {feed}: {e}")
+        return None
+
+
+def _should_emit(event_id: str) -> bool:
+    # Deduplicate window 60s
+    cutoff = _now() - timedelta(seconds=60)
+    for eid in list(RecentIndex.keys()):
+        if RecentIndex[eid] < cutoff:
+            RecentIndex.pop(eid, None)
+    if event_id in RecentIndex:
+        return False
+    RecentIndex[event_id] = _now()
+    return True
+
+
+async def _enqueue(event: Dict[str, Any]):
+    Counters["events_received"] += 1
+    if not _should_emit(event["id"]):
+        Counters["events_dropped"] += 1
+        return
+    try:
+        EventQueue.put_nowait(event)
+        # Update collapse index for IP sources
+        if event.get("ioc_type") == "ip":
+            key = _masked_ip(event.get("ioc", ""))
+            if key:
+                item = CollapseIndex.setdefault(
+                    key, {"count": 0, "since": _now(), "last": _now(), "sample": event}
+                )
+                item["count"] += 1
+                item["last"] = _now()
+    except asyncio.QueueFull:
+        Counters["events_dropped"] += 1
+
+
+async def _emit_status(feed: str, status: str, message: str = ""):
+    payload = {"kind": "status", "feed": feed, "status": status, "message": message}
+    await live_manager.broadcast(payload)
+
+
+async def _dispatcher_loop():
+    while True:
+        try:
+            event = await EventQueue.get()
+            payload = {"kind": "attack", "event": event}
+            await live_manager.broadcast(payload)
+            Counters["events_emitted"] += 1
+            # Pace: 1–3 events/sec with 1–8s jitter
+            base_delay = random.uniform(0.33, 1.0)
+            jitter = random.uniform(1.0, 8.0) if random.random() < 0.2 else 0.0
+            await asyncio.sleep(base_delay + jitter)
+        except Exception as e:
+            logger.warning(f"Dispatcher error: {e}")
+            await asyncio.sleep(1)
+
+
+async def _collapse_loop():
+    # Periodically emit collapsed summaries and prune old entries
+    while True:
+        try:
+            now_ts = _now()
+            cutoff = now_ts - timedelta(seconds=30)
+            keys_to_delete = []
+            for key, item in list(CollapseIndex.items()):
+                # If recent activity in window, emit and reset
+                if (
+                    item.get("last")
+                    and item["last"] >= cutoff
+                    and item.get("count", 0) >= 5
+                ):
+                    sample = item.get("sample") or {}
+                    conf_pct = int(round((sample.get("confidence", 0.0) or 0.0) * 100))
+                    headline = (
+                        f"10+ similar events from {key} in 30s"
+                        if item["count"] >= 10
+                        else f"{item['count']} similar events from {key} in 30s"
+                    )
+                    since_dt = item.get("since") or now_ts
+                    payload = {
+                        "kind": "collapse",
+                        "ioc": key,
+                        "count": item["count"],
+                        "since": since_dt.replace(microsecond=0).isoformat() + "Z",
+                        "headline": headline,
+                    }
+                    await live_manager.broadcast(payload)
+                    # reset counter but keep window
+                    CollapseIndex[key] = {
+                        "count": 0,
+                        "since": now_ts,
+                        "last": now_ts,
+                        "sample": sample,
+                    }
+                # prune old
+                if item.get("last") and item["last"] < cutoff:
+                    keys_to_delete.append(key)
+            for k in keys_to_delete:
+                CollapseIndex.pop(k, None)
+        except Exception as e:
+            logger.debug(f"Collapse loop error: {e}")
+        finally:
+            await asyncio.sleep(5)
+
+
+async def _poll_threatfox():
+    feed = "threatfox"
+    base = FEED_INTERVALS[feed]
+    _reset_backoff(feed)
+    while True:
+        try:
+            # Respect backoff window
+            until = FeedBackoff.get(feed, {}).get("until")
+            if until and _now() < until:
+                await asyncio.sleep(1)
+                continue
+            async with httpx.AsyncClient(timeout=15) as client:
+                # ThreatFox API: recent IOCs
+                resp = await client.post(
+                    "https://threatfox.abuse.ch/api/v1/",
+                    json={"query": "recent_iocs"},
+                )
+            if resp.status_code >= 500 or resp.status_code in (429,):
+                delay = _exp_backoff(feed, base)
+                await _emit_status(
+                    feed, "backoff", f"HTTP {resp.status_code}; sleeping {delay}s"
+                )
+            else:
+                data = resp.json()
+                _reset_backoff(feed)
+                await _emit_status(feed, "ok", "fetched")
+                items = data.get("data") or data.get("ioc") or []
+                for raw in items:
+                    ev = _normalize(feed, raw)
+                    if ev:
+                        await _enqueue(ev)
+            await asyncio.sleep(base)
+        except Exception as e:
+            delay = _exp_backoff(feed, base)
+            await _emit_status(feed, "backoff", f"error: {e}; sleeping {delay}s")
+            await asyncio.sleep(delay)
+
+
+async def _poll_urlhaus():
+    feed = "urlhaus"
+    base = FEED_INTERVALS[feed]
+    _reset_backoff(feed)
+    while True:
+        try:
+            until = FeedBackoff.get(feed, {}).get("until")
+            if until and _now() < until:
+                await asyncio.sleep(1)
+                continue
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get("https://urlhaus.abuse.ch/downloads/csv/")
+            if resp.status_code >= 500 or resp.status_code in (429,):
+                delay = _exp_backoff(feed, base)
+                await _emit_status(
+                    feed, "backoff", f"HTTP {resp.status_code}; sleeping {delay}s"
+                )
+            else:
+                _reset_backoff(feed)
+                await _emit_status(feed, "ok", "fetched")
+                text = resp.text
+                lines = [
+                    ln for ln in text.splitlines() if ln and not ln.startswith("#")
+                ]
+                for ln in lines[:500]:  # limit per cycle
+                    parts = ln.split(",")
+                    if len(parts) < 3:
+                        continue
+                    entry_id = parts[0].strip()
+                    url = parts[2].strip()
+                    raw = {"id": entry_id, "url": url, "tags": []}
+                    ev = _normalize(feed, raw)
+                    if ev:
+                        await _enqueue(ev)
+            await asyncio.sleep(base)
+        except Exception as e:
+            delay = _exp_backoff(feed, base)
+            await _emit_status(feed, "backoff", f"error: {e}; sleeping {delay}s")
+            await asyncio.sleep(delay)
+
+
+async def _poll_malwarebazaar():
+    feed = "malwarebazaar"
+    base = FEED_INTERVALS[feed]
+    _reset_backoff(feed)
+    while True:
+        try:
+            until = FeedBackoff.get(feed, {}).get("until")
+            if until and _now() < until:
+                await asyncio.sleep(1)
+                continue
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    "https://mb-api.abuse.ch/api/v1/",
+                    data={"query": "get_recent", "limit": 100},
+                )
+            if resp.status_code >= 500 or resp.status_code in (429,):
+                delay = _exp_backoff(feed, base)
+                await _emit_status(
+                    feed, "backoff", f"HTTP {resp.status_code}; sleeping {delay}s"
+                )
+            else:
+                data = resp.json()
+                _reset_backoff(feed)
+                await _emit_status(feed, "ok", "fetched")
+                items = data.get("data") or []
+                for raw in items:
+                    ev = _normalize(feed, raw)
+                    if ev:
+                        await _enqueue(ev)
+            await asyncio.sleep(base)
+        except Exception as e:
+            delay = _exp_backoff(feed, base)
+            await _emit_status(feed, "backoff", f"error: {e}; sleeping {delay}s")
+            await asyncio.sleep(delay)
+
+
+async def _poll_otx():
+    feed = "otx"
+    base = FEED_INTERVALS[feed]
+    _reset_backoff(feed)
+    if not OTX_API_KEY:
+        logger.info("OTX_API_KEY not set; OTX feed disabled")
+        return
+    headers = {"X-OTX-API-KEY": OTX_API_KEY}
+    while True:
+        try:
+            until = FeedBackoff.get(feed, {}).get("until")
+            if until and _now() < until:
+                await asyncio.sleep(1)
+                continue
+            async with httpx.AsyncClient(timeout=20, headers=headers) as client:
+                resp = await client.get(
+                    "https://otx.alienvault.com/api/v1/pulses/subscribed"
+                )
+            if resp.status_code >= 500 or resp.status_code in (429,):
+                delay = _exp_backoff(feed, base)
+                await _emit_status(
+                    feed, "backoff", f"HTTP {resp.status_code}; sleeping {delay}s"
+                )
+            elif resp.status_code == 401:
+                await _emit_status(feed, "backoff", "Unauthorized; check OTX_API_KEY")
+                await asyncio.sleep(base)
+            else:
+                data = resp.json()
+                _reset_backoff(feed)
+                await _emit_status(feed, "ok", "fetched")
+                pulses = data.get("results") or data.get("pulses") or []
+                for p in pulses:
+                    pulse_id = p.get("id")
+                    indicators = p.get("indicators") or []
+                    for ind in indicators:
+                        raw = {
+                            "pulse_id": pulse_id,
+                            "indicator": ind,
+                            "tags": p.get("tags"),
+                        }
+                        ev = _normalize(feed, raw)
+                        if ev:
+                            await _enqueue(ev)
+            await asyncio.sleep(base)
+        except Exception as e:
+            delay = _exp_backoff(feed, base)
+            await _emit_status(feed, "backoff", f"error: {e}; sleeping {delay}s")
+            await asyncio.sleep(delay)
+
+
+# Startup to launch background tasks
+async def _start_live_mode_tasks():
+    try:
+        asyncio.create_task(_dispatcher_loop())
+        asyncio.create_task(_collapse_loop())
+        asyncio.create_task(_poll_threatfox())
+        asyncio.create_task(_poll_urlhaus())
+        asyncio.create_task(_poll_malwarebazaar())
+        asyncio.create_task(_poll_otx())
+        logger.info("Attack Live Mode tasks started")
+    except Exception as e:
+        logger.error(f"Failed to start Live Mode tasks: {e}")
+
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -140,9 +556,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Set up templates and static files
-templates = Jinja2Templates(directory="templates")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Set up templates and static files with robust absolute paths
+_BASE_DIR = _os.path.dirname(__file__)
+_TEMPLATES_DIR = _os.path.join(_BASE_DIR, "templates")
+_STATIC_DIR = _os.path.join(_BASE_DIR, "static")
+templates = Jinja2Templates(directory=_TEMPLATES_DIR)
+if _os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 # Set up error handlers
 setup_error_handlers(app)
@@ -160,6 +580,18 @@ app.add_middleware(
 # Utility functions
 def iso_now():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+@app.on_event("startup")
+async def _startup_hooks():
+    # Start Attack Live Mode background loops
+    asyncio.create_task(_start_live_mode_tasks())
+    # Start live feed service background worker
+    try:
+        get_service().start()
+        logger.info("LiveFeedService started")
+    except Exception as e:
+        logger.error(f"Failed to start LiveFeedService: {e}")
 
 
 def log_and_respond(
@@ -269,7 +701,7 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
         "lon": 0.0,
         "isp": "Unknown ISP",
     }
-    
+
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
@@ -287,7 +719,9 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
                         "isp": g.get("isp", "Unknown ISP"),
                     }
                 else:
-                    logger.debug(f"Geo API returned non-success for {ip}: {g.get('status')}")
+                    logger.debug(
+                        f"Geo API returned non-success for {ip}: {g.get('status')}"
+                    )
     except Exception as e:
         logger.warning(f"⚠️ Geo enrichment failed for {ip}, using defaults: {e}")
 
@@ -333,98 +767,16 @@ async def enrich_ip(ip: str, use_abuseipdb: bool = False) -> dict:
                         "lastReportedAt": abuse_data.get("lastReportedAt", None),
                     }
         except Exception as e:
-            logger.warning(f"⚠️ AbuseIPDB enrich failed for {ip}, continuing without abuse data: {e}")
+            logger.warning(
+                f"⚠️ AbuseIPDB enrich failed for {ip}, continuing without abuse data: {e}"
+            )
 
     result = {"ip": ip, **geo, "domain": domain, "abuse": abuse}
     EnrichCache[ip] = {"data": result, "expires": now + timedelta(hours=24)}
-    logger.debug(f"✅ Enriched IP {ip}: {geo.get('countryCode')}, {geo.get('lat')}, {geo.get('lon')}")
+    logger.debug(
+        f"✅ Enriched IP {ip}: {geo.get('countryCode')}, {geo.get('lat')}, {geo.get('lon')}"
+    )
     return result
-
-
-# Background tasks
-async def dshield_fetch_and_enrich():
-    while True:
-        try:
-            logger.info("Fetching DShield top IPs...")
-            raw = await fetch_dshield_top_ips()
-            enriched = []
-            now = datetime.utcnow()
-            for entry in raw:
-                ip = entry.get("ip")
-                attackCount = entry.get("attackCount", 0)
-                meta = await enrich_ip(ip, use_abuseipdb=False)
-                enriched.append(
-                    {
-                        "ip": ip,
-                        "attackCount": attackCount,
-                        "source": "dshield",
-                        "lat": meta.get("lat"),
-                        "lon": meta.get("lon"),
-                        "countryCode": meta.get("countryCode"),
-                        "countryName": meta.get("countryName"),
-                        "isp": meta.get("isp"),
-                        "domain": meta.get("domain"),
-                        "firstSeen": now.isoformat() + "Z",
-                        "lastSeen": now.isoformat() + "Z",
-                        "cached_from": "dshield_xml",
-                        "cluster_id": None,
-                    }
-                )
-            DShieldCache["attacks"] = enriched
-            DShieldCache["last_fetch"] = now
-            logger.info(
-                f"DShield fetch complete: {len(enriched)} attacks at {now.isoformat()}Z"
-            )
-        except Exception as e:
-            logger.error(f"DShield fetch/enrich failed: {e}")
-        await asyncio.sleep(300)
-
-
-async def update_live_cache():
-    """Background task to update the /live cache."""
-    while True:
-        try:
-            abuse_data, dshield_data = await asyncio.gather(
-                fetch_latest_reports(), fetch_dshield_top_ips()
-            )
-            # Defensive: ensure we have lists
-            if isinstance(abuse_data, dict) and abuse_data.get("error"):
-                logger.warning(f"Abuse reports fetch returned error: {abuse_data}")
-                abuse_data = []
-            if not isinstance(abuse_data, list):
-                logger.warning(
-                    f"Abuse reports unexpected type, normalizing to list: {type(abuse_data)}"
-                )
-                abuse_data = []
-            if not isinstance(dshield_data, list):
-                logger.warning(
-                    f"DShield data unexpected type, normalizing to list: {type(dshield_data)}"
-                )
-                dshield_data = []
-
-            # Merge and deduplicate
-            merged = {}
-            for entry in dshield_data:
-                merged[entry["ip"]] = entry.copy()
-            for entry in abuse_data:
-                if isinstance(entry, dict):
-                    ip = entry.get("ip") or entry.get("ipAddress")
-                else:
-                    logger.debug(f"Skipping non-dict abuse entry: {entry}")
-                    continue
-                if ip in merged:
-                    merged[ip].update(entry)
-                else:
-                    merged[ip] = entry
-            # Convert to list
-            combined = list(merged.values())
-            with LIVE_CACHE["lock"]:
-                LIVE_CACHE["data"] = combined
-                LIVE_CACHE["timestamp"] = time.time()
-            logger.info(f"/live cache updated: {len(combined)} IPs")
-        except Exception as e:
-            logger.error(f"/live cache update failed: {e}")
-        await asyncio.sleep(min(ABUSEIPDB_INTERVAL, DSHIELD_INTERVAL))
 
 
 async def fetch_latest_reports(limit=20):
@@ -445,99 +797,6 @@ async def fetch_latest_reports(limit=20):
             return {"error": "request_failed", "message": str(e)}
 
 
-# Clustering function
-def cluster_attacks(attacks, max_distance_km=100):
-    clusters = []
-    for attack in attacks:
-        found = False
-        for cluster in clusters:
-            lat1, lon1 = attack["latitude"], attack["longitude"]
-            lat2, lon2 = cluster["latitude"], cluster["longitude"]
-            dlat = math.radians(lat2 - lat1)
-            dlon = math.radians(lon2 - lon1)
-            a = (
-                math.sin(dlat / 2) ** 2
-                + math.cos(math.radians(lat1))
-                * math.cos(math.radians(lat2))
-                * math.sin(dlon / 2) ** 2
-            )
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-            distance = 6371 * c
-            if distance < max_distance_km:
-                cluster["cluster_size"] += 1
-                found = True
-                break
-        if not found:
-            clusters.append({**attack, "cluster_size": 1})
-    return clusters
-
-
-# Mock attack stream
-async def mock_attack_stream(websocket: WebSocket):
-    """Stream mock attack events for fallback mode."""
-    logger.info("Starting mock attack stream")
-    try:
-        # Check if WebSocket is still connected before sending
-        if websocket.client_state != websocket.client_state.CONNECTED:
-            logger.info("WebSocket disconnected, stopping mock stream")
-            return
-
-        await websocket.send_json(
-            {
-                "type": "status",
-                "message": "Using fallback/mock stream",
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            }
-        )
-
-        while True:
-            # Check WebSocket state before each iteration
-            if websocket.client_state != websocket.client_state.CONNECTED:
-                logger.info("WebSocket disconnected during mock stream, stopping")
-                break
-
-            # Generate mock DShield events
-            mock_events = await generate_mock_dshield_events(count=random.randint(1, 3))
-
-            for event in mock_events:
-                # Check WebSocket state before each send
-                if websocket.client_state != websocket.client_state.CONNECTED:
-                    logger.info(
-                        "WebSocket disconnected while sending mock events, stopping"
-                    )
-                    return
-
-                try:
-                    await websocket.send_json({"type": "attack", "data": event})
-                    logger.debug(f"Sent mock event: {event['id']}")
-                except Exception as send_error:
-                    logger.error(f"Failed to send mock event: {send_error}")
-                    # If send fails, likely due to disconnection, break out
-                    return
-
-            # Random delay between batches
-            delay = random.uniform(2.0, 6.0)
-            logger.debug(f"Mock stream sleeping for {delay:.1f}s")
-            await asyncio.sleep(delay)
-
-    except WebSocketDisconnect:
-        logger.info("Client disconnected from mock attack stream")
-    except Exception as e:
-        logger.error(f"Error in mock attack stream: {str(e)}")
-        # Only try to send error if WebSocket is still connected
-        if websocket.client_state == websocket.client_state.CONNECTED:
-            try:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": f"Mock stream error: {str(e)}",
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                    }
-                )
-            except Exception:
-                pass
-
-
 # API Endpoints
 @app.get("/health")
 def health():
@@ -546,11 +805,6 @@ def health():
         data={
             "status": "ok",
             "time": iso_now(),
-            "dshield_last_fetch": (
-                DShieldCache["last_fetch"].isoformat() + "Z"
-                if DShieldCache["last_fetch"]
-                else None
-            ),
             "abuseipdb_key_present": bool(ABUSEIPDB_KEY),
         },
     )
@@ -589,26 +843,9 @@ async def admin_status():
         health_data = {
             "status": "ok",
             "time": iso_now(),
-            "feed_mode": FEED_MODE,
-            "dshield_last_fetch": (
-                DShieldCache["last_fetch"].isoformat() + "Z"
-                if DShieldCache["last_fetch"]
-                else None
-            ),
             "abuseipdb_key_present": bool(ABUSEIPDB_KEY),
             "active_connections": len(manager.active_connections),
-            "log_connections": len(manager.log_connections),
-            "total_attacks": len(DShieldCache["attacks"]),
         }
-
-        # Test DShield connectivity
-        try:
-            events = await fetch_dshield_events(max_retries=1, base_delay=0.5)
-            health_data["dshield_status"] = "online" if events else "offline"
-            logger.info(f"DShield status: {health_data['dshield_status']}")
-        except Exception as e:
-            logger.error(f"DShield connectivity test failed: {e}")
-            health_data["dshield_status"] = "offline"
 
         # Test AbuseIPDB connectivity
         try:
@@ -662,17 +899,6 @@ async def admin_clear_cache():
         EnrichCache.clear()
         logger.info("EnrichCache cleared")
 
-        # Clear DShield cache
-        DShieldCache["attacks"] = []
-        DShieldCache["last_fetch"] = None
-        logger.info("DShieldCache cleared")
-
-        # Clear live cache
-        with LIVE_CACHE["lock"]:
-            LIVE_CACHE["data"] = []
-            LIVE_CACHE["timestamp"] = time.time()
-        logger.info("LIVE_CACHE cleared")
-
         # Clear IP cache database
         try:
             import sqlite3
@@ -695,63 +921,6 @@ async def admin_clear_cache():
         logger.error(f"Cache clear error: {e}", exc_info=True)
         return log_and_respond(
             False, error="CACHE_CLEAR_ERROR", message=str(e), status_code=500
-        )
-
-
-@app.post("/api/admin/refresh-dshield")
-async def admin_refresh_dshield():
-    """Manually refresh DShield data."""
-    try:
-        logger.info("Manual DShield refresh requested by admin")
-
-        # Force refresh DShield data
-        raw = await fetch_dshield_top_ips()
-        logger.info(f"Fetched {len(raw)} raw IPs from DShield")
-
-        enriched = []
-        now = datetime.utcnow()
-
-        for entry in raw:
-            ip = entry.get("ip")
-            attackCount = entry.get("attackCount", 0)
-            meta = await enrich_ip(ip, use_abuseipdb=False)
-            enriched.append(
-                {
-                    "ip": ip,
-                    "attackCount": attackCount,
-                    "source": "dshield",
-                    "lat": meta.get("lat"),
-                    "lon": meta.get("lon"),
-                    "countryCode": meta.get("countryCode"),
-                    "countryName": meta.get("countryName"),
-                    "isp": meta.get("isp"),
-                    "domain": meta.get("domain"),
-                    "firstSeen": now.isoformat() + "Z",
-                    "lastSeen": now.isoformat() + "Z",
-                    "cached_from": "dshield_xml",
-                    "cluster_id": None,
-                }
-            )
-
-        DShieldCache["attacks"] = enriched
-        DShieldCache["last_fetch"] = now
-
-        logger.info(
-            f"DShield refresh complete: {len(enriched)} attacks enriched and cached"
-        )
-        return log_and_respond(
-            True,
-            data={
-                "message": f"DShield data refreshed successfully",
-                "attack_count": len(enriched),
-                "timestamp": now.isoformat() + "Z",
-            },
-        )
-
-    except Exception as e:
-        logger.error(f"DShield refresh error: {e}", exc_info=True)
-        return log_and_respond(
-            False, error="DSHIELD_REFRESH_ERROR", message=str(e), status_code=500
         )
 
 
@@ -810,56 +979,6 @@ async def health_abuseipdb():
                 "last_check": datetime.utcnow().isoformat() + "Z",
             },
             status_code=503,
-        )
-
-
-@app.post("/api/debug/feed_mode")
-async def set_feed_mode(request: Request):
-    """Set live feed mode: 'live' (DShield) or 'fallback' (mock).
-    Accepts both JSON body and query parameter."""
-    global FEED_MODE
-    
-    try:
-        # Try to get mode from JSON body first
-        try:
-            body = await request.json()
-            mode = body.get("mode")
-            logger.info(f"📥 Received feed_mode request via JSON body: {body}")
-        except Exception:
-            # Fall back to query parameter
-            mode = request.query_params.get("mode")
-            logger.info(f"📥 Received feed_mode request via query param: mode={mode}")
-        
-        if not mode:
-            logger.error("❌ No mode provided in request")
-            return log_and_respond(
-                False,
-                error="MISSING_MODE",
-                message="mode parameter required (either in body or query)",
-                status_code=400,
-            )
-        
-        if mode not in ("live", "fallback"):
-            logger.error(f"❌ Invalid mode provided: {mode}")
-            return log_and_respond(
-                False,
-                error="INVALID_MODE",
-                message="mode must be 'live' or 'fallback'",
-                status_code=400,
-            )
-        
-        old_mode = FEED_MODE
-        FEED_MODE = mode
-        logger.info(f"✅ Feed mode changed from '{old_mode}' to '{FEED_MODE}'")
-        return log_and_respond(True, data={"mode": FEED_MODE, "previous_mode": old_mode})
-        
-    except Exception as e:
-        logger.error(f"❌ Error in set_feed_mode: {e}", exc_info=True)
-        return log_and_respond(
-            False,
-            error="FEED_MODE_ERROR",
-            message=str(e),
-            status_code=500,
         )
 
 
@@ -930,155 +1049,6 @@ async def enrich_ip_endpoint(ip: str, abuse: bool = False):
         )
 
 
-@app.get("/cluster_expand")
-async def cluster_expand(
-    cluster_id: Optional[str] = None,
-    lat: Optional[float] = None,
-    lon: Optional[float] = None,
-    radius_km: float = 500,
-):
-    try:
-        attacks = DShieldCache["attacks"]
-        if cluster_id:
-            group = [a for a in attacks if str(a.get("cluster_id")) == str(cluster_id)]
-            return {
-                "success": True,
-                "data": {
-                    "attacks": group,
-                    "expand_type": "cluster_id",
-                    "cluster_id": cluster_id,
-                },
-            }
-        elif lat is not None and lon is not None:
-
-            def haversine(lat1, lon1, lat2, lon2):
-                from math import atan2, cos, radians, sin, sqrt
-
-                R = 6371
-                dlat = radians(lat2 - lat1)
-                dlon = radians(lon2 - lon1)
-                a = (
-                    sin(dlat / 2) ** 2
-                    + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-                )
-                c = 2 * atan2(sqrt(a), sqrt(1 - a))
-                return R * c
-
-            group = [
-                a
-                for a in attacks
-                if a.get("lat") is not None
-                and a.get("lon") is not None
-                and haversine(lat, lon, a["lat"], a["lon"]) <= radius_km
-            ]
-            return log_and_respond(
-                True,
-                data={
-                    "attacks": group,
-                    "expand_type": "geo_radius",
-                    "center": {"lat": lat, "lon": lon},
-                    "radius_km": radius_km,
-                },
-            )
-        else:
-            return log_and_respond(
-                False,
-                error="NO_CRITERIA",
-                message="Provide cluster_id or lat/lon for expansion",
-                status_code=400,
-            )
-    except Exception as e:
-        logger.error(f"/cluster_expand error: {e}")
-        return log_and_respond(
-            False, error="CLUSTER_EXPAND_ERROR", message=str(e), status_code=500
-        )
-
-
-@app.get("/live_feed")
-async def live_feed_endpoint(enabled: bool = True, lighten: bool = False):
-    logger.info(f"/live_feed requested: enabled={enabled}, lighten={lighten}")
-    if not enabled:
-        return log_and_respond(True, data={"status": "Live mode off", "attacks": []})
-    try:
-        attacks = await fetch_dshield_top_ips()
-        if not isinstance(attacks, list):
-            raise Exception("DShield fetch failed")
-        clustered = cluster_attacks(attacks)
-        if lighten:
-
-            def simplify(attack):
-                return {
-                    "ip": attack["ip"],
-                    "countryCode": attack["countryCode"],
-                    "latitude": round(attack["latitude"], 2),
-                    "longitude": round(attack["longitude"], 2),
-                    "attackCount": attack["attackCount"],
-                    "cluster_size": attack.get("cluster_size", 1),
-                    "source": attack.get("source", "dshield"),
-                }
-
-            merged = []
-            for att in clustered:
-                found = False
-                for m in merged:
-                    dlat = math.radians(m["latitude"] - att["latitude"])
-                    dlon = math.radians(m["longitude"] - att["longitude"])
-                    a = (
-                        math.sin(dlat / 2) ** 2
-                        + math.cos(math.radians(att["latitude"]))
-                        * math.cos(math.radians(m["latitude"]))
-                        * math.sin(dlon / 2) ** 2
-                    )
-                    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-                    distance = 6371 * c
-                    if distance < 20:
-                        m["attackCount"] += att["attackCount"]
-                        m["cluster_size"] += att.get("cluster_size", 1)
-                        found = True
-                        break
-                if not found:
-                    merged.append(simplify(att))
-            logger.info(f"Returning {len(merged)} lightened attacks")
-            return log_and_respond(True, data={"attacks": merged})
-        logger.info(f"Returning {len(clustered)} clustered attacks")
-        return log_and_respond(True, data={"attacks": clustered})
-    except Exception as e:
-        logger.error(f"DShield fetch failed: {str(e)}")
-        dummy = [
-            {
-                "ip": "8.8.8.8",
-                "countryCode": "US",
-                "latitude": 37.386,
-                "longitude": -122.084,
-                "attackCount": 1,
-                "cluster_size": 1,
-                "source": "dshield",
-            }
-        ]
-        return log_and_respond(
-            False,
-            error="API_FAIL",
-            message="DShield unavailable, using fallback data.",
-            data={"attacks": dummy},
-            status_code=503,
-        )
-
-
-@app.get("/live")
-async def live_endpoint():
-    """Return combined AbuseIPDB and DShield data for globe visualization."""
-    with LIVE_CACHE["lock"]:
-        data = LIVE_CACHE["data"]
-        ts = LIVE_CACHE["timestamp"]
-
-    if not data:
-        logger.info("/live returning fallback sample_ips because live cache is empty")
-        sample = load_sample_ips()
-        return {"timestamp": ts, "ips": sample, "source": "sample_fallback"}
-
-    return {"timestamp": ts, "ips": data, "source": "live_cache"}
-
-
 @app.get("/check_ip")
 def check_ip_endpoint(ip: str = Query(...)):
     USE_MOCK = os.getenv("USE_MOCK_DATA", "false").lower() == "true"
@@ -1136,6 +1106,29 @@ def geo_ip_endpoint(ip: str = Query(...)):
         raise ServiceUnavailableError("GeoIP", {"reason": str(e)})
 
 
+# Live feed debug endpoints (service-backed; not connected to frontend)
+@app.get("/api/live-feed/test")
+async def live_feed_test(limit: int = 20):
+    try:
+        svc = get_service()
+        snap = svc.snapshot(limit=limit)
+        return JSONResponse(content=snap)
+    except Exception as e:
+        logger.error(f"/api/live-feed/test error: {e}")
+        return JSONResponse(content={"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/live-feed/status")
+async def live_feed_status():
+    try:
+        svc = get_service()
+        st = svc.get_status()
+        return JSONResponse(content=st)
+    except Exception as e:
+        logger.error(f"/api/live-feed/status error: {e}")
+        return JSONResponse(content={"ok": False, "error": str(e)}, status_code=500)
+
+
 # WebSocket endpoints
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -1173,512 +1166,110 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.websocket("/ws/attacks")
-async def ws_dshield_attacks(websocket: WebSocket):
-    """Stream DShield attack events via WebSocket with resilient fallback."""
-    await websocket.accept()
-    logger.info("=== DShield WebSocket client connected ===")
-    logger.info(f"WebSocket client state: {websocket.client_state}")
-    logger.info(f"WebSocket client info: {websocket.client}")
-    global FEED_MODE
-    logger.info(f"Current FEED_MODE: {FEED_MODE}")
-    logger.info(f"USE_MOCK_DATA env: {os.getenv('USE_MOCK_DATA', 'false')}")
-
-    USE_MOCK = os.getenv("USE_MOCK_DATA", "false").lower() == "true"
-    MODE = FEED_MODE  # "live" | "fallback"
-
-    async def send_status(message: str):
-        try:
-            # Check WebSocket state before sending
-            if websocket.client_state != websocket.client_state.CONNECTED:
-                logger.info(
-                    f"WebSocket disconnected, cannot send status message: '{message}'"
-                )
-                return False
-            logger.info(f"📤 Sending status: '{message}'")
-            await websocket.send_json(
-                {
-                    "type": "status",
-                    "message": message,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                }
-            )
-            logger.debug(f"✅ Status message sent successfully: '{message}'")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Failed to send status message '{message}': {e}")
-            return False
-
-    # Prioritize LIVE mode - only use fallback if explicitly requested or if USE_MOCK is true
-    if USE_MOCK:
-        logger.warning("⚠️  USE_MOCK_DATA is enabled - using mock stream")
-        await send_status("Using mock stream (USE_MOCK_DATA=true)")
-        await mock_attack_stream(websocket)
-        return
-
-    if MODE == "fallback":
-        logger.warning("⚠️  FEED_MODE is 'fallback' - using mock stream")
-        await send_status("Using fallback/mock stream")
-        await mock_attack_stream(websocket)
-        return
-
+async def websocket_attacks_endpoint(websocket: WebSocket):
+    """Stub WebSocket endpoint for attack feed - Live Mode removed."""
     try:
-        logger.info("🌐 Starting LIVE DShield stream mode")
-        if not await send_status("Connected to DShield stream"):
-            logger.info("WebSocket disconnected during initial status, stopping")
-            return
-
-        sent_events = set()
-        backoff = 1.0
-        max_backoff = 60.0
-        fallback_after = 3  # Reduced attempts for faster fallback
-        attempts = 0
-
+        await websocket.accept()
+        logger.info(
+            "WebSocket /ws/attacks connected (stub endpoint - Live Mode disabled)"
+        )
+        # Send a notification that this endpoint is disabled
+        await websocket.send_json(
+            {
+                "type": "status",
+                "message": "Live Mode has been removed. This endpoint is disabled.",
+                "timestamp": iso_now(),
+            }
+        )
+        # Keep connection open but don't send any data
         while True:
-            # Check WebSocket state before each iteration
-            if websocket.client_state != websocket.client_state.CONNECTED:
-                logger.info("⚠️  WebSocket disconnected during main loop, stopping")
+            try:
+                await websocket.receive_text()
+            except WebSocketDisconnect:
                 break
-
-            try:
-                logger.info(f"=== 🔍 DShield fetch attempt {attempts + 1} ===")
-                logger.info(
-                    f"Calling fetch_dshield_events with max_retries=1, base_delay=1.0"
-                )
-                events = await fetch_dshield_events(max_retries=1, base_delay=1.0)
-                logger.info(
-                    f"📊 DShield fetch returned {len(events) if events else 0} events"
-                )
-                if events:
-                    logger.info(
-                        f"📋 First event sample: {events[0] if events else 'None'}"
-                    )
-                else:
-                    logger.warning("⚠️  DShield fetch returned empty events list")
-
-                if not events:
-                    attempts += 1
-                    logger.warning(
-                        f"DShield returned no events (attempt {attempts}/{fallback_after})"
-                    )
-                    if not await send_status("DShield feed offline"):
-                        logger.info(
-                            "WebSocket disconnected while sending offline status, stopping"
-                        )
-                        break
-                    if attempts >= fallback_after:
-                        logger.info(
-                            "=== Switching to fallback after failed attempts ==="
-                        )
-                        if not await send_status("Switching to fallback/mock stream"):
-                            logger.info(
-                                "WebSocket disconnected while switching to fallback, stopping"
-                            )
-                            break
-                        await mock_attack_stream(websocket)
-                        return
-                    await asyncio.sleep(min(max_backoff, backoff))
-                    backoff = min(max_backoff, backoff * 2)
-                    continue
-
-                # reset backoff and attempts on success
-                backoff = 1.0
-                attempts = 0
-                logger.info("✅ Live DShield stream active - processing events")
-
-                new_events = []
-                for event in events:
-                    event_id = event.get("id")
-                    if event_id and event_id not in sent_events:
-                        sent_events.add(event_id)
-                        new_events.append(event)
-
-                logger.info(
-                    f"📨 Found {len(new_events)} new events to send (total: {len(events)}, cached: {len(sent_events)})"
-                )
-
-                for i, event in enumerate(new_events):
-                    # Check WebSocket state before each send
-                    if websocket.client_state != websocket.client_state.CONNECTED:
-                        logger.info(
-                            "⚠️  WebSocket disconnected while sending events, stopping"
-                        )
-                        return
-                    try:
-                        logger.info(
-                            f"📤 Sending event {i+1}/{len(new_events)}: {event.get('id', 'unknown')} - {event.get('src_ip', 'unknown IP')}"
-                        )
-                        await websocket.send_json({"type": "attack", "data": event})
-                        logger.info(
-                            f"✅ Event {i+1}/{len(new_events)} sent successfully"
-                        )
-                    except Exception as send_error:
-                        logger.error(
-                            f"❌ Failed to send event {event.get('id', 'unknown')}: {send_error}"
-                        )
-                        # If send fails, likely due to disconnection, break out
-                        return
-
-                if new_events:
-                    logger.info(
-                        f"🎯 Sent {len(new_events)} new REAL DShield events to frontend"
-                    )
-                else:
-                    logger.debug(
-                        "ℹ️  No new DShield events to send (all events already sent)"
-                    )
-
-                if len(sent_events) > 2000:
-                    logger.debug("Clearing sent events cache")
-                    sent_events.clear()
-
-                await asyncio.sleep(10)
-
-            except Exception as fetch_error:
-                logger.error(f"DShield fetch error: {fetch_error}")
-                # Only try to send error if WebSocket is still connected
-                if websocket.client_state == websocket.client_state.CONNECTED:
-                    try:
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "message": f"DShield fetch failed: {str(fetch_error)}",
-                                "timestamp": datetime.utcnow().isoformat() + "Z",
-                            }
-                        )
-                    except Exception:
-                        pass
-                attempts += 1
-                if attempts >= fallback_after:
-                    logger.info("Switching to fallback due to repeated errors")
-                    if not await send_status(
-                        "Switching to fallback/mock stream due to errors"
-                    ):
-                        logger.info(
-                            "WebSocket disconnected while switching to fallback, stopping"
-                        )
-                        break
-                    await mock_attack_stream(websocket)
-                    return
-                await asyncio.sleep(min(max_backoff, backoff))
-                backoff = min(max_backoff, backoff * 2)
-
     except WebSocketDisconnect:
-        logger.info("DShield WebSocket client disconnected")
+        logger.info("WebSocket /ws/attacks disconnected")
     except Exception as e:
-        logger.error(f"DShield WebSocket error: {e}")
-        # Only try to send error if WebSocket is still connected
-        if websocket.client_state == websocket.client_state.CONNECTED:
+        logger.error(f"WebSocket /ws/attacks error: {e}")
+
+
+@app.websocket("/ws/live")
+async def websocket_live_endpoint(websocket: WebSocket):
+    """Attack Live Mode stream: emits normalized events from feeds."""
+    try:
+        await live_manager.connect(websocket)
+        await websocket.send_json(
+            {
+                "kind": "status",
+                "feed": "live",
+                "status": FeedStatus or {},
+                "message": "connected",
+            }
+        )
+        # Keep alive; all data is pushed from background tasks
+        while True:
             try:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": f"WebSocket error: {str(e)}",
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                    }
-                )
-            except Exception:
-                pass
+                await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
+    except WebSocketDisconnect:
+        live_manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"/ws/live error: {e}")
         try:
             await websocket.close()
-        except Exception:
-            pass
         finally:
-            logger.info("DShield WebSocket connection cleanup completed")
+            live_manager.disconnect(websocket)
 
 
 @app.websocket("/ws/logs")
-async def websocket_logs(websocket: WebSocket):
-    """WebSocket endpoint for streaming backend logs."""
+async def websocket_logs_endpoint(websocket: WebSocket):
+    """Stub WebSocket endpoint for log streaming - Live Mode removed."""
     try:
-        await manager.connect_log(websocket)
-        logger.info("Log WebSocket client connected")
-
-        # Send initial connection message
+        await websocket.accept()
+        logger.info("WebSocket /ws/logs connected (stub endpoint - Live Mode disabled)")
+        # Send a notification that this endpoint is disabled
         await websocket.send_json(
             {
                 "type": "log",
                 "level": "info",
-                "message": "Connected to log stream",
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "message": "Live Mode has been removed. Log streaming is disabled.",
+                "timestamp": iso_now(),
             }
         )
-
-        # Keep connection alive
+        # Keep connection open but don't send any data
         while True:
             try:
-                # Wait for client messages (ping/pong)
-                data = await websocket.receive_text()
-                if data == "ping":
-                    await websocket.send_text("pong")
+                await websocket.receive_text()
             except WebSocketDisconnect:
                 break
-
     except WebSocketDisconnect:
-        logger.info("Log WebSocket client disconnected")
+        logger.info("WebSocket /ws/logs disconnected")
     except Exception as e:
-        logger.error(f"Log WebSocket error: {e}")
-    finally:
-        manager.disconnect(websocket)
-        logger.info("Log WebSocket connection cleanup completed")
-
-
-# Debug endpoints
-@app.get("/api/debug/dshield")
-async def debug_dshield():
-    """Debug endpoint to fetch and return latest DShield events."""
-    try:
-        events = await fetch_dshield_events()
-        return {
-            "status": "success",
-            "count": len(events),
-            "events": events,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-        }
-    except Exception as e:
-        logger.error(f"Debug DShield fetch failed: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-        }
-
-
-@app.get("/api/debug/dshield-fetch")
-async def debug_dshield_fetch():
-    """Debug endpoint to test DShield fetch with detailed response info."""
-    try:
-        logger.info("=== DShield Debug Fetch Starting ===")
-
-        # Test direct HTTP fetch
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get("https://isc.sans.edu/api/topips/")
-            logger.info(f"DShield raw status: {resp.status_code}")
-            logger.info(
-                f"DShield content-type: {resp.headers.get('content-type', 'unknown')}"
-            )
-            logger.info(f"DShield response length: {len(resp.text)}")
-            logger.info(f"DShield response preview: {resp.text[:200]}")
-
-            # Test XML parsing
-            if resp.text.strip().startswith("<?xml") or resp.text.strip().startswith(
-                "<"
-            ):
-                logger.info("DShield returned XML, testing xmltodict parsing")
-                try:
-                    xml_data = xmltodict.parse(resp.text)
-                    logger.info(
-                        f"XML parsing successful, structure: {list(xml_data.keys())}"
-                    )
-
-                    entries = []
-                    if "topips" in xml_data and "ipaddress" in xml_data["topips"]:
-                        ip_list = xml_data["topips"]["ipaddress"]
-                        if not isinstance(ip_list, list):
-                            ip_list = [ip_list]
-
-                        for ip_elem in ip_list:
-                            try:
-                                rank = int(ip_elem.get("rank", 0))
-                                ip = ip_elem.get("source", "")
-                                reports = int(ip_elem.get("reports", 0))
-                                targets = int(ip_elem.get("targets", 0))
-
-                                if ip:
-                                    entries.append(
-                                        {
-                                            "rank": rank,
-                                            "ip": ip,
-                                            "reports": reports,
-                                            "targets": targets,
-                                        }
-                                    )
-                            except (ValueError, TypeError) as e:
-                                logger.warning(
-                                    f"Failed to parse IP entry: {ip_elem}, error: {e}"
-                                )
-                                continue
-
-                    logger.info(
-                        f"DShield XML parsed successfully: {len(entries)} entries"
-                    )
-
-                    return {
-                        "status": "success",
-                        "http_status": resp.status_code,
-                        "content_type": resp.headers.get("content-type", "unknown"),
-                        "response_length": len(resp.text),
-                        "response_preview": resp.text[:200],
-                        "xml_parsing": "success",
-                        "entries_count": len(entries),
-                        "sample_entries": entries[:5],  # First 5 entries
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                    }
-
-                except Exception as xml_err:
-                    logger.error(f"XML parsing failed: {xml_err}")
-                    return {
-                        "status": "xml_parse_error",
-                        "http_status": resp.status_code,
-                        "content_type": resp.headers.get("content-type", "unknown"),
-                        "response_length": len(resp.text),
-                        "response_preview": resp.text[:200],
-                        "xml_parsing": "failed",
-                        "error": str(xml_err),
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                    }
-            else:
-                logger.warning("DShield response is not XML")
-                return {
-                    "status": "not_xml",
-                    "http_status": resp.status_code,
-                    "content_type": resp.headers.get("content-type", "unknown"),
-                    "response_length": len(resp.text),
-                    "response_preview": resp.text[:200],
-                    "xml_parsing": "not_applicable",
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                }
-
-    except Exception as e:
-        logger.error(f"DShield debug fetch failed: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-        }
-
-
-@app.get("/api/debug/dshield/simulate")
-async def debug_dshield_simulate():
-    """Debug endpoint to return simulated DShield events for testing."""
-    try:
-        # Create a few simulated events for testing
-        simulated_events = [
-            {
-                "id": "sim-1.2.3.4-1234567890",
-                "src_ip": "1.2.3.4",
-                "dst_ip": "0.0.0.0",
-                "src_lat": 40.7128,
-                "src_lng": -74.0060,
-                "dst_lat": 0.0,
-                "dst_lng": 0.0,
-                "reported_at": datetime.utcnow().isoformat() + "Z",
-                "confidence": 85,
-                "protocol": "tcp",
-                "description": "Simulated DShield report: 42 attacks",
-                "source": "dshield",
-                "attack_count": 42,
-                "country_code": "US",
-                "country_name": "United States",
-                "isp": "Test ISP",
-                "domain": "example.com",
-            },
-            {
-                "id": "sim-5.6.7.8-1234567891",
-                "src_ip": "5.6.7.8",
-                "dst_ip": "0.0.0.0",
-                "src_lat": 51.5074,
-                "src_lng": -0.1278,
-                "dst_lat": 0.0,
-                "dst_lng": 0.0,
-                "reported_at": datetime.utcnow().isoformat() + "Z",
-                "confidence": 72,
-                "protocol": "tcp",
-                "description": "Simulated DShield report: 28 attacks",
-                "source": "dshield",
-                "attack_count": 28,
-                "country_code": "GB",
-                "country_name": "United Kingdom",
-                "isp": "Test ISP UK",
-                "domain": "example.co.uk",
-            },
-        ]
-        return {
-            "status": "success",
-            "count": len(simulated_events),
-            "events": simulated_events,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "note": "This is simulated data for testing",
-        }
-    except Exception as e:
-        logger.error(f"Debug DShield simulation failed: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-        }
-
-
-@app.get("/api/debug/feed-mode")
-async def debug_feed_mode(
-    mode: str = Query("live", description="Feed mode: live, fallback, or mock")
-):
-    """Debug endpoint to test different feed modes."""
-    global FEED_MODE
-
-    if mode not in ["live", "fallback", "mock"]:
-        return JSONResponse(
-            content={"error": "Invalid mode. Use: live, fallback, or mock"},
-            status_code=400,
-        )
-
-    old_mode = FEED_MODE
-    FEED_MODE = mode
-
-    return JSONResponse(
-        content={
-            "message": f"Feed mode changed from '{old_mode}' to '{mode}'",
-            "current_mode": FEED_MODE,
-            "instructions": {
-                "live": "Connects to real DShield API",
-                "fallback": "Uses mock data when DShield fails",
-                "mock": "Always uses mock data",
-            },
-        }
-    )
-
-
-@app.get("/api/health/live-feed")
-async def health_live_feed():
-    """Health endpoint for live feed status."""
-    try:
-        # Test DShield connectivity
-        events = await fetch_dshield_events(max_retries=1, base_delay=0.5)
-        if events:
-            return JSONResponse(
-                content={
-                    "status": "live",
-                    "message": "DShield feed is operational",
-                    "event_count": len(events),
-                    "last_check": datetime.utcnow().isoformat() + "Z",
-                }
-            )
-        else:
-            return JSONResponse(
-                content={
-                    "status": "fallback",
-                    "message": "DShield feed unavailable, fallback active",
-                    "last_check": datetime.utcnow().isoformat() + "Z",
-                }
-            )
-    except Exception as e:
-        return JSONResponse(
-            content={
-                "status": "down",
-                "message": f"DShield feed error: {str(e)}",
-                "last_check": datetime.utcnow().isoformat() + "Z",
-            },
-            status_code=503,
-        )
-
-
-# Startup events
-@app.on_event("startup")
-async def start_background_tasks():
-    asyncio.create_task(dshield_fetch_and_enrich())
-    asyncio.create_task(update_live_cache())
+        logger.error(f"WebSocket /ws/logs error: {e}")
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Print startup information
+    print("🚀 Starting DDoS Globe Visualizer Backend...")
+    print(f"📍 Server will be available at: http://localhost:8000")
+    print(f"🔧 Admin dashboard at: http://localhost:8000/admin")
+    print(f"❤️  Health check at: http://localhost:8000/health")
+    print("=" * 50)
+
+    try:
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="info",
+            access_log=True,
+            reload=False,  # Set to False to avoid connection spam
+        )
+    except KeyboardInterrupt:
+        print("\n🛑 Server stopped by user")
+    except Exception as e:
+        print(f"❌ Server error: {e}")
+        raise

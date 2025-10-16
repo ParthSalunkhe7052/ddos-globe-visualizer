@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -46,11 +47,7 @@ function ToastItem({ id, message, type, onDone, duration }) {
     fontSize: 14,
   };
 
-  const typeChip = {
-    success: { background: "#B6F3C8" },
-    error: { background: "#FFD3D3" },
-    info: { background: "#DDEBFF" },
-  }[type] || { background: "#DDEBFF" };
+  // chip intentionally unused (style simplified below)
 
   return (
     <div

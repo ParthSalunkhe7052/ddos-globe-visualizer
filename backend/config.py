@@ -1,5 +1,6 @@
 """
-Configuration settings for DDoS Globe Visualizer
+Configuration settings for DDoS Globe Visualizer.
+Loads environment variables and exposes constants for use across the backend.
 """
 
 import os
@@ -26,9 +27,3 @@ WS_PORT = int(os.getenv("WS_PORT", "8000"))
 
 # Debug Configuration
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
-
-print(f"🔧 Configuration loaded:")
-print(f"   DShield Mode: {DSHIELD_MODE}")
-print(f"   Use Mock Data: {USE_MOCK_DATA}")
-print(f"   AbuseIPDB Key: {'Set' if ABUSEIPDB_KEY else 'Not set'}")
-print(f"   Debug Mode: {DEBUG}")

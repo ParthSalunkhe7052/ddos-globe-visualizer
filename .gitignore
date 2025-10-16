@@ -1,33 +1,58 @@
+# OS
+Thumbs.db
+Desktop.ini
+
 # Python
-venv/
-.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache/
-.ipynb_checkpoints/
+.mypy_cache/
+.coverage
+coverage.xml
+.venv/
+venv/
+env/
 
-# Env & secrets
-.env
-.env.*
-
-# Node/React
+# Node
 node_modules/
+frontend/node_modules/
+frontend/.vite/
+frontend/dist/
+frontend/.eslintcache
+
+# Build & Logs
 dist/
 build/
+*.log
+logs/
 
-# OS/editor stuff
-.DS_Store
-Thumbs.db
-.vscode/
+# Environments & Secrets
+.env
+.env.*
+!.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Databases & Caches
+*.db
+*.sqlite
+backend/ip_cache.db
+
+# Editor/Tooling
 .idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Coverage reports
+htmlcov/
+
 
 # Data & models
 data/
-*.mmdb
 *.pkl
-pycache/
-*.log
-*.tmp
-*.bak

@@ -1,7 +1,7 @@
 import React from "react";
 import { useNotifications } from "./NotificationProvider";
 
-export default function NotificationBell({ theme = "dark" }) {
+export default function NotificationBell() {
   const { toggle, items, unread } = useNotifications();
   const total = items.length;
   return (

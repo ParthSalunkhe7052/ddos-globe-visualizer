@@ -1,7 +1,5 @@
-# Load .env and ABUSEIPDB_KEY for consistency with main.py
 import logging
 import os
-import pprint
 
 import httpx
 from dotenv import load_dotenv
@@ -9,26 +7,12 @@ from dotenv import load_dotenv
 # Configure logging
 logger = logging.getLogger(__name__)
 
-cwd = os.getcwd()
-env_path = os.path.join(cwd, ".env")
-print(f"[DEBUG abuseipdb_service] Current working directory: {cwd}")
-print(f"[DEBUG abuseipdb_service] Looking for .env at: {env_path}")
-load_dotenv(dotenv_path=env_path, override=True)
-print("[DEBUG abuseipdb_service] All environment variables:")
-pprint.pprint(dict(os.environ))
+# Load environment variables (no sensitive prints)
+load_dotenv(override=True)
 API_KEY = os.getenv("ABUSEIPDB_KEY")
 BASE_URL = "https://api.abuseipdb.com/api/v2/check"
-if API_KEY:
-    logging.info(
-        f"[abuseipdb_service] ABUSEIPDB_KEY loaded: {API_KEY[:4]}... (length {len(API_KEY)})"
-    )
-    print(
-        f"[DEBUG abuseipdb_service] ABUSEIPDB_KEY loaded: '{API_KEY}' (type: {type(API_KEY)}, length: {len(API_KEY)})"
-    )
-    print(f"[DEBUG abuseipdb_service] ABUSEIPDB_KEY repr: {repr(API_KEY)}")
-else:
+if not API_KEY:
     logging.warning("[abuseipdb_service] ABUSEIPDB_KEY not configured!")
-    print("[DEBUG abuseipdb_service] ABUSEIPDB_KEY not loaded from .env!")
 
 
 def check_ip(ip_address: str):

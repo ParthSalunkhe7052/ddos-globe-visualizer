@@ -60,8 +60,8 @@ export default function GlobeComponent({
           setTexture(url);
           return;
         }
-      } catch (err) {
-        console.warn("All textures failed, using fallback");
+      } catch {
+        // all textures failed, using fallback
         setTexture(FALLBACK_TEXTURE);
       }
     };
@@ -70,9 +70,9 @@ export default function GlobeComponent({
 
   // Global error handling
   useEffect(() => {
-    const handleError = (err) => {
-      console.error("Globe error:", err);
-      setError(err);
+    const handleError = (e) => {
+      // globe error
+      setError(e);
     };
     window.addEventListener("error", handleError);
     return () => window.removeEventListener("error", handleError);
@@ -82,20 +82,18 @@ export default function GlobeComponent({
   const processedPoints = useMemo(() => {
     try {
       if (enableClustering) {
-        console.warn(
-          "Clustering enabled, but clusterPoints not implemented yet",
-        );
+        // clustering not implemented
         // return clusterPoints(points);
       }
       return points;
-    } catch (err) {
-      console.error("Error clustering points:", err);
+    } catch {
+      // error clustering points
       return points;
     }
   }, [points, enableClustering]);
 
   const handleGlobeReady = useCallback(() => {
-    console.log("Globe ready");
+    // globe ready
     setGlobeReady(true);
 
     // Set up auto-rotation
@@ -214,7 +212,7 @@ export default function GlobeComponent({
             textAlign: "center",
           }}
         >
-          No points to display. Search for an IP or enable live mode.
+          No points to display. Search for an IP to analyze.
         </div>
       )}
     </div>

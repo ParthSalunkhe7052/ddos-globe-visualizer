@@ -4,8 +4,8 @@ import StatsPanel from "./StatsPanel";
 
 export default function Sidebar({
   open,
-  onClose,
-  theme = "dark",
+  // onClose, // unused
+  // theme = "dark",
   recentIps = [],
   setRecentIps,
   handleExportCSV,
@@ -16,10 +16,10 @@ export default function Sidebar({
   setFilterCountry,
   filterSeverity,
   setFilterSeverity,
-  GLOBE_TEXTURES = [],
-  globeTexture,
-  setGlobeTexture,
-  onThemeToggle,
+  // GLOBE_TEXTURES = [], // unused
+  // globeTexture, // unused
+  // setGlobeTexture, // unused
+  // onThemeToggle, // unused
   heatmapMode,
   setHeatmapMode,
 }) {

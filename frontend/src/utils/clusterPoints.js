@@ -26,7 +26,7 @@ export function clusterPoints(
     grid.get(key).push(pt);
   }
   const clustered = [];
-  for (const [key, pts] of grid.entries()) {
+  for (const [, pts] of grid.entries()) {
     if (pts.length >= minClusterSize) {
       // Make a cluster point
       const avgLat = pts.reduce((s, p) => s + p.lat, 0) / pts.length;
