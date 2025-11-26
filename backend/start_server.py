@@ -18,9 +18,19 @@ def main():
 
     print("🚀 Starting DDoS Globe Visualizer Backend...")
     print(f"📁 Working directory: {os.getcwd()}")
-    print(f"📍 Server will be available at: http://localhost:8000")
-    print(f"🔧 Admin dashboard at: http://localhost:8000/admin")
-    print(f"❤️  Health check at: http://localhost:8000/health")
+
+    # Set default environment variables if not set
+    if not os.getenv("DShieldMode"):
+        os.environ["DShieldMode"] = "live"
+        print("📋 Set DShieldMode=live (default)")
+
+    if not os.getenv("USE_MOCK_DATA"):
+        os.environ["USE_MOCK_DATA"] = "false"
+        print("📋 Set USE_MOCK_DATA=false (default)")
+
+    print("📍 Server will be available at: http://localhost:8000")
+    print("🔧 Admin dashboard at: http://localhost:8000/admin")
+    print("❤️  Health check at: http://localhost:8000/health")
     print("=" * 60)
     print("💡 To stop the server, press Ctrl+C")
     print("=" * 60)
@@ -45,7 +55,8 @@ def main():
     except ImportError as e:
         print(f"❌ Import error: {e}")
         print(
-            "💡 Make sure you're in the backend directory and dependencies are installed"
+            "💡 Make sure you're in the backend directory and "
+            "dependencies are installed"
         )
         sys.exit(1)
     except Exception as e:
