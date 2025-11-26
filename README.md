@@ -16,8 +16,6 @@
 
 ---
 
-## Part 1: The Hook 🎯
-
 ### What is it?
 **A real-time 3D globe that visualizes cyber attacks happening around the world, helping security teams detect and respond to threats instantly.**
 
@@ -35,7 +33,7 @@ DDoS Globe Visualizer automatically aggregates threat intelligence from 5+ sourc
 
 ---
 
-## Part 2: The Tech 🛠️
+##  The Tech 🛠️
 
 ### Tech Stack
 
